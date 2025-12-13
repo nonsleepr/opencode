@@ -1,7 +1,5 @@
 Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
 
-All commands run in ${directory} by default. Use the `workdir` parameter if you need to run a command in a different directory.
-
 Before executing the command, please follow these steps:
 
 1. Directory Verification:
@@ -29,6 +27,14 @@ Usage notes:
   which allows you to continue working while the command runs. You can monitor the output
   using the Bash tool as it becomes available. You do not need to use '&' at the end of
   the command when using this parameter.
+    - **Auto-background behavior**: Commands that take longer than 10 seconds will
+  automatically be moved to the background and return a PID. This allows long-running
+  commands to complete without blocking your workflow.
+    - When a command is moved to background (either explicitly via `run_in_background: true`
+  or automatically after 10 seconds), you receive a PID that you can use with:
+      - `process_output` tool: Retrieve current output and process status
+      - `process_input` tool: Send input to the running process's stdin
+      - `kill <pid>` bash command: Terminate the background process
 
     - Avoid using Bash with the `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or
   `echo` commands, unless explicitly instructed or when these commands are truly necessary

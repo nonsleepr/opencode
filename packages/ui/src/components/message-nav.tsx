@@ -1,6 +1,7 @@
 import { UserMessage } from "@opencode-ai/sdk/v2"
-import { ComponentProps, For, Match, Show, splitProps, Switch } from "solid-js"
+import { ComponentProps, createMemo, For, Match, Show, splitProps, Switch } from "solid-js"
 import { DiffChanges } from "./diff-changes"
+import { Spinner } from "./spinner"
 import { Tooltip } from "@kobalte/core/tooltip"
 
 export function MessageNav(
@@ -8,15 +9,20 @@ export function MessageNav(
     messages: UserMessage[]
     current?: UserMessage
     size: "normal" | "compact"
+    working?: boolean
     onMessageSelect: (message: UserMessage) => void
   },
 ) {
-  const [local, others] = splitProps(props, ["messages", "current", "size", "onMessageSelect"])
+  const [local, others] = splitProps(props, ["messages", "current", "size", "working", "onMessageSelect"])
+  const lastUserMessage = createMemo(() => {
+    return local.messages?.at(0)
+  })
 
   const content = () => (
     <ul role="list" data-component="message-nav" data-size={local.size} {...others}>
       <For each={local.messages}>
         {(message) => {
+          const messageWorking = createMemo(() => message.id === lastUserMessage()?.id && local.working)
           const handleClick = () => local.onMessageSelect(message)
 
           return (
@@ -29,7 +35,14 @@ export function MessageNav(
                 </Match>
                 <Match when={local.size === "normal"}>
                   <button data-slot="message-nav-message-button" onClick={handleClick}>
-                    <DiffChanges changes={message.summary?.diffs ?? []} variant="bars" />
+                    <Switch>
+                      <Match when={messageWorking()}>
+                        <Spinner />
+                      </Match>
+                      <Match when={true}>
+                        <DiffChanges changes={message.summary?.diffs ?? []} variant="bars" />
+                      </Match>
+                    </Switch>
                     <div
                       data-slot="message-nav-title-preview"
                       data-active={message.id === local.current?.id || undefined}
@@ -51,7 +64,7 @@ export function MessageNav(
   return (
     <Switch>
       <Match when={local.size === "compact"}>
-        <Tooltip openDelay={0} closeDelay={300} placement="right-start" gutter={-40} shift={-10} overlap>
+        <Tooltip openDelay={0} closeDelay={300} placement="left-start" gutter={-65} shift={-16} overlap>
           <Tooltip.Trigger as="div">{content()}</Tooltip.Trigger>
           <Tooltip.Portal>
             <Tooltip.Content data-slot="message-nav-tooltip">

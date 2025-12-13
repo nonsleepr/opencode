@@ -43,12 +43,9 @@ const getModelsInfo = query(async (workspaceID: string) => {
           const pA = getPriority(idA)
           const pB = getPriority(idB)
           if (pA !== pB) return pA - pB
-
-          const modelAName = Array.isArray(modelA) ? modelA[0].name : modelA.name
-          const modelBName = Array.isArray(modelB) ? modelB[0].name : modelB.name
-          return modelAName.localeCompare(modelBName)
+          return modelA.name.localeCompare(modelB.name)
         })
-        .map(([id, model]) => ({ id, name: Array.isArray(model) ? model[0].name : model.name })),
+        .map(([id, model]) => ({ id, name: model.name })),
       disabled: await Model.listDisabled(),
     }
   }, workspaceID)

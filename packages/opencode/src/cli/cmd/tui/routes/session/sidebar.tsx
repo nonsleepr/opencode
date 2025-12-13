@@ -1,5 +1,5 @@
 import { useSync } from "@tui/context/sync"
-import { createMemo, For, Show, Switch, Match } from "solid-js"
+import { createMemo, For, Show, Switch, Match, createSignal, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useTheme } from "../../context/theme"
 import { Locale } from "@/util/locale"
@@ -18,12 +18,20 @@ export function Sidebar(props: { sessionID: string }) {
   const todo = createMemo(() => sync.data.todo[props.sessionID] ?? [])
   const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
 
+  // Reactive tick signal for updating timers every second
+  const [tick, setTick] = createSignal(0)
+  const tickInterval = setInterval(() => setTick((prev) => prev + 1), 1000)
+  onCleanup(() => clearInterval(tickInterval))
+
   const [expanded, setExpanded] = createStore({
     mcp: true,
     diff: true,
     todo: true,
     lsp: true,
+    processes: true,
   })
+
+  const directory = useDirectory()
 
   // Sort MCP servers alphabetically for consistent display order
   const mcpEntries = createMemo(() => Object.entries(sync.data.mcp).sort(([a], [b]) => a.localeCompare(b)))
@@ -49,7 +57,6 @@ export function Sidebar(props: { sessionID: string }) {
   })
 
   const keybind = useKeybind()
-  const directory = useDirectory()
 
   const hasProviders = createMemo(() =>
     sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
@@ -245,6 +252,76 @@ export function Sidebar(props: { sessionID: string }) {
                 </Show>
               </box>
             </Show>
+
+            {/* Background Processes Section */}
+            <Show when={sync.data.processes.filter((p) => p.status === "running").length > 0}>
+              <box>
+                <box
+                  flexDirection="row"
+                  gap={1}
+                  onMouseDown={() => {
+                    const runningProcs = sync.data.processes.filter((p) => p.status === "running")
+                    if (runningProcs.length > 2) {
+                      setExpanded("processes", !expanded.processes)
+                    }
+                  }}
+                >
+                  <Show when={sync.data.processes.filter((p) => p.status === "running").length > 2}>
+                    <text fg={theme.text}>{expanded.processes ? "▼" : "▶"}</text>
+                  </Show>
+                  <text fg={theme.text}>
+                    <b>Background Processes</b>
+                  </text>
+                </box>
+                <Show
+                  when={sync.data.processes.filter((p) => p.status === "running").length <= 2 || expanded.processes}
+                >
+                  <For each={sync.data.processes.filter((p) => p.status === "running")}>
+                    {(process) => {
+                      const runtime = createMemo(() => {
+                        tick() // Subscribe to tick signal for reactivity
+                        const elapsed = Date.now() - process.startTime
+                        const seconds = Math.floor(elapsed / 1000)
+
+                        if (seconds < 60) return `${seconds}s`
+
+                        const minutes = Math.floor(seconds / 60)
+                        if (minutes < 60) return `${minutes}m`
+
+                        const hours = Math.floor(minutes / 60)
+                        const remainingMinutes = minutes % 60
+                        return `${hours}h ${remainingMinutes}m`
+                      })
+
+                      const displayCmd = createMemo(() => {
+                        const maxLen = 28
+                        if (process.command.length <= maxLen) return process.command
+                        return process.command.substring(0, maxLen - 3) + "..."
+                      })
+
+                      return (
+                        <box flexDirection="row" gap={1} justifyContent="space-between">
+                          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
+                            <text fg={theme.success} flexShrink={0}>
+                              ◉
+                            </text>
+                            <text fg={theme.text} flexShrink={0}>
+                              {process.pid}
+                            </text>
+                            <text fg={theme.textMuted} wrapMode="char">
+                              {displayCmd()}
+                            </text>
+                          </box>
+                          <text fg={theme.textMuted} flexShrink={0}>
+                            {runtime()}
+                          </text>
+                        </box>
+                      )
+                    }}
+                  </For>
+                </Show>
+              </box>
+            </Show>
           </box>
         </scrollbox>
 
@@ -259,11 +336,9 @@ export function Sidebar(props: { sessionID: string }) {
               flexDirection="row"
               gap={1}
             >
-              <text flexShrink={0} fg={theme.text}>
-                ⬖
-              </text>
+              <text flexShrink={0}>⬖</text>
               <box flexGrow={1} gap={1}>
-                <text fg={theme.text}>
+                <text>
                   <b>Getting started</b>
                 </text>
                 <text fg={theme.textMuted}>OpenCode includes free models so you can start immediately.</text>
@@ -271,16 +346,13 @@ export function Sidebar(props: { sessionID: string }) {
                   Connect from 75+ providers to use other models, including Claude, GPT, Gemini etc
                 </text>
                 <box flexDirection="row" gap={1} justifyContent="space-between">
-                  <text fg={theme.text}>Connect provider</text>
+                  <text>Connect provider</text>
                   <text fg={theme.textMuted}>/connect</text>
                 </box>
               </box>
             </box>
           </Show>
-          <text>
-            <span style={{ fg: theme.textMuted }}>{directory().split("/").slice(0, -1).join("/")}/</span>
-            <span style={{ fg: theme.text }}>{directory().split("/").at(-1)}</span>
-          </text>
+          <text fg={theme.text}>{directory()}</text>
           <text fg={theme.textMuted}>
             <span style={{ fg: theme.success }}>•</span> <b>Open</b>
             <span style={{ fg: theme.text }}>

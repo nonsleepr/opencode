@@ -26,7 +26,6 @@ export const github = query(async () => {
       release: {
         name: release.name,
         url: release.html_url,
-        tag_name: release.tag_name,
       },
       contributors: contributorCount,
     }

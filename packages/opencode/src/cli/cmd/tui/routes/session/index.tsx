@@ -32,6 +32,8 @@ import type { Tool } from "@/tool/tool"
 import type { ReadTool } from "@/tool/read"
 import type { WriteTool } from "@/tool/write"
 import { BashTool } from "@/tool/bash"
+import type { ProcessOutputTool } from "@/tool/process-output"
+import type { ProcessInputTool } from "@/tool/process-input"
 import type { GlobTool } from "@/tool/glob"
 import { TodoWriteTool } from "@/tool/todo"
 import type { GrepTool } from "@/tool/grep"
@@ -289,7 +291,6 @@ export function Session() {
               if (child) scroll.scrollBy(child.y - scroll.y - 1)
             }}
             sessionID={route.sessionID}
-            setPrompt={(promptInfo) => prompt.set(promptInfo)}
           />
         ))
       },
@@ -895,7 +896,7 @@ export function Session() {
                                 <box marginTop={1}>
                                   <For each={revert()!.diffFiles}>
                                     {(file) => (
-                                      <text fg={theme.text}>
+                                      <text>
                                         {file.filename}
                                         <Show when={file.additions > 0}>
                                           <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
@@ -1387,6 +1388,55 @@ ToolRegistry.register<typeof BashTool>({
   },
 })
 
+ToolRegistry.register<typeof ProcessOutputTool>({
+  name: "process_output",
+  container: "block",
+  render(props) {
+    const { theme } = useTheme()
+    const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+
+    return (
+      <>
+        <ToolTitle icon="◉" fallback="Retrieving process output..." when={props.input.pid}>
+          Process {props.input.pid}
+          <Show when={props.metadata.status}>
+            {" "}
+            <span style={{ fg: props.metadata.status === "running" ? theme.warning : theme.text }}>
+              ({props.metadata.status})
+            </span>
+          </Show>
+          <Show when={props.metadata.exitCode !== null && props.metadata.exitCode !== 0}>
+            {" "}
+            <span style={{ fg: theme.error }}>exit {props.metadata.exitCode}</span>
+          </Show>
+        </ToolTitle>
+        <Show when={output()}>
+          <box>
+            <text fg={theme.text}>{output()}</text>
+          </box>
+        </Show>
+      </>
+    )
+  },
+})
+
+ToolRegistry.register<typeof ProcessInputTool>({
+  name: "process_input",
+  container: "inline",
+  render(props) {
+    const { theme } = useTheme()
+    return (
+      <ToolTitle icon="→" fallback="Sending input..." when={props.input.pid}>
+        Sent input to process {props.input.pid}
+        <Show when={props.input.close_stdin}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>(stdin closed)</span>
+        </Show>
+      </ToolTitle>
+    )
+  },
+})
+
 ToolRegistry.register<typeof ReadTool>({
   name: "read",
   container: "inline",
@@ -1504,15 +1554,11 @@ ToolRegistry.register<typeof TaskTool>({
         <Show when={props.metadata.summary?.length}>
           <box>
             <For each={props.metadata.summary ?? []}>
-              {(task, index) => {
-                const summary = props.metadata.summary ?? []
-                return (
-                  <text style={{ fg: task.state.status === "error" ? theme.error : theme.textMuted }}>
-                    {index() === summary.length - 1 ? "└" : "├"} {Locale.titlecase(task.tool)}{" "}
-                    {task.state.status === "completed" ? task.state.title : ""}
-                  </text>
-                )
-              }}
+              {(task) => (
+                <text style={{ fg: task.state.status === "error" ? theme.error : theme.textMuted }}>
+                  ∟ {Locale.titlecase(task.tool)} {task.state.status === "completed" ? task.state.title : ""}
+                </text>
+              )}
             </For>
           </box>
         </Show>

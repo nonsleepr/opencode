@@ -445,6 +445,31 @@ export type EventMessagePartRemoved = {
   }
 }
 
+export type EventBackgroundProcessStarted = {
+  type: "background.process.started"
+  properties: {
+    pid: number
+    command: string
+    workdir: string
+  }
+}
+
+export type EventBackgroundProcessCompleted = {
+  type: "background.process.completed"
+  properties: {
+    pid: number
+    exitCode: number | null
+    signal: string | null
+  }
+}
+
+export type EventBackgroundProcessKilled = {
+  type: "background.process.killed"
+  properties: {
+    pid: number
+  }
+}
+
 export type Permission = {
   id: string
   type: string
@@ -575,7 +600,6 @@ export type Session = {
     created: number
     updated: number
     compacting?: number
-    archived?: number
   }
   revert?: {
     messageID: string
@@ -725,13 +749,6 @@ export type EventServerConnected = {
   }
 }
 
-export type EventGlobalDisposed = {
-  type: "global.disposed"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
 export type Event =
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
@@ -743,6 +760,9 @@ export type Event =
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartRemoved
+  | EventBackgroundProcessStarted
+  | EventBackgroundProcessCompleted
+  | EventBackgroundProcessKilled
   | EventPermissionUpdated
   | EventPermissionReplied
   | EventSessionStatus
@@ -766,7 +786,6 @@ export type Event =
   | EventPtyExited
   | EventPtyDeleted
   | EventServerConnected
-  | EventGlobalDisposed
 
 export type GlobalEvent = {
   directory: string
@@ -949,138 +968,6 @@ export type KeybindsConfig = {
    */
   input_newline?: string
   /**
-   * Move cursor left in input
-   */
-  input_move_left?: string
-  /**
-   * Move cursor right in input
-   */
-  input_move_right?: string
-  /**
-   * Move cursor up in input
-   */
-  input_move_up?: string
-  /**
-   * Move cursor down in input
-   */
-  input_move_down?: string
-  /**
-   * Select left in input
-   */
-  input_select_left?: string
-  /**
-   * Select right in input
-   */
-  input_select_right?: string
-  /**
-   * Select up in input
-   */
-  input_select_up?: string
-  /**
-   * Select down in input
-   */
-  input_select_down?: string
-  /**
-   * Move to start of line in input
-   */
-  input_line_home?: string
-  /**
-   * Move to end of line in input
-   */
-  input_line_end?: string
-  /**
-   * Select to start of line in input
-   */
-  input_select_line_home?: string
-  /**
-   * Select to end of line in input
-   */
-  input_select_line_end?: string
-  /**
-   * Move to start of visual line in input
-   */
-  input_visual_line_home?: string
-  /**
-   * Move to end of visual line in input
-   */
-  input_visual_line_end?: string
-  /**
-   * Select to start of visual line in input
-   */
-  input_select_visual_line_home?: string
-  /**
-   * Select to end of visual line in input
-   */
-  input_select_visual_line_end?: string
-  /**
-   * Move to start of buffer in input
-   */
-  input_buffer_home?: string
-  /**
-   * Move to end of buffer in input
-   */
-  input_buffer_end?: string
-  /**
-   * Select to start of buffer in input
-   */
-  input_select_buffer_home?: string
-  /**
-   * Select to end of buffer in input
-   */
-  input_select_buffer_end?: string
-  /**
-   * Delete line in input
-   */
-  input_delete_line?: string
-  /**
-   * Delete to end of line in input
-   */
-  input_delete_to_line_end?: string
-  /**
-   * Delete to start of line in input
-   */
-  input_delete_to_line_start?: string
-  /**
-   * Backspace in input
-   */
-  input_backspace?: string
-  /**
-   * Delete character in input
-   */
-  input_delete?: string
-  /**
-   * Undo in input
-   */
-  input_undo?: string
-  /**
-   * Redo in input
-   */
-  input_redo?: string
-  /**
-   * Move word forward in input
-   */
-  input_word_forward?: string
-  /**
-   * Move word backward in input
-   */
-  input_word_backward?: string
-  /**
-   * Select word forward in input
-   */
-  input_select_word_forward?: string
-  /**
-   * Select word backward in input
-   */
-  input_select_word_backward?: string
-  /**
-   * Delete word forward in input
-   */
-  input_delete_word_forward?: string
-  /**
-   * Delete word backward in input
-   */
-  input_delete_word_backward?: string
-  /**
    * Previous history item
    */
   history_previous?: string
@@ -1176,7 +1063,6 @@ export type ProviderConfig = {
     [key: string]: {
       id?: string
       name?: string
-      family?: string
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
@@ -1532,7 +1418,6 @@ export type ToolListItem = {
 export type ToolList = Array<ToolListItem>
 
 export type Path = {
-  home: string
   state: string
   config: string
   worktree: string
@@ -1604,7 +1489,6 @@ export type Model = {
     npm: string
   }
   name: string
-  family?: string
   capabilities: {
     temperature: boolean
     reasoning: boolean
@@ -1839,22 +1723,6 @@ export type GlobalEventResponses = {
 }
 
 export type GlobalEventResponse = GlobalEventResponses[keyof GlobalEventResponses]
-
-export type GlobalDisposeData = {
-  body?: never
-  path?: never
-  query?: never
-  url: "/global/dispose"
-}
-
-export type GlobalDisposeResponses = {
-  /**
-   * Global disposed
-   */
-  200: boolean
-}
-
-export type GlobalDisposeResponse = GlobalDisposeResponses[keyof GlobalDisposeResponses]
 
 export type ProjectListData = {
   body?: never
@@ -2407,9 +2275,6 @@ export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
 export type SessionUpdateData = {
   body?: {
     title?: string
-    time?: {
-      archived?: number
-    }
   }
   path: {
     sessionID: string
@@ -3190,7 +3055,6 @@ export type ProviderListResponses = {
         [key: string]: {
           id: string
           name: string
-          family?: string
           release_date: string
           attachment: boolean
           reasoning: boolean
@@ -3785,6 +3649,37 @@ export type LspStatusResponses = {
 }
 
 export type LspStatusResponse = LspStatusResponses[keyof LspStatusResponses]
+
+export type ProcessListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/process/list"
+}
+
+export type ProcessListResponses = {
+  /**
+   * Successfully retrieved process list
+   */
+  200: Array<{
+    pid: number
+    command: string
+    workdir: string
+    sessionID: string
+    status: "running" | "completed" | "killed"
+    exitCode: number | null
+    signal: string | null
+    stdout: string
+    stderr: string
+    combined: string
+    startTime: number
+    endTime: number | null
+  }>
+}
+
+export type ProcessListResponse = ProcessListResponses[keyof ProcessListResponses]
 
 export type FormatterStatusData = {
   body?: never

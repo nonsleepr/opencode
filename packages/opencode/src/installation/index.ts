@@ -6,7 +6,6 @@ import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { Log } from "../util/log"
 import { iife } from "@/util/iife"
-import { Flag } from "../flag/flag"
 
 declare global {
   const OPENCODE_VERSION: string
@@ -163,7 +162,7 @@ export namespace Installation {
 
   export const VERSION = typeof OPENCODE_VERSION === "string" ? OPENCODE_VERSION : "local"
   export const CHANNEL = typeof OPENCODE_CHANNEL === "string" ? OPENCODE_CHANNEL : "local"
-  export const USER_AGENT = `opencode/${CHANNEL}/${VERSION}/${Flag.OPENCODE_CLIENT}`
+  export const USER_AGENT = `opencode/${CHANNEL}/${VERSION}`
 
   export async function latest(installMethod?: Method) {
     const detectedMethod = installMethod || (await method())

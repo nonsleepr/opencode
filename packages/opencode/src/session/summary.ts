@@ -91,7 +91,7 @@ export namespace SessionSummary {
     if (textPart && !userMsg.summary?.title) {
       const result = await generateText({
         maxOutputTokens: small.capabilities.reasoning ? 1500 : 20,
-        providerOptions: ProviderTransform.providerOptions(small, options),
+        providerOptions: ProviderTransform.providerOptions(small, options, []),
         messages: [
           ...SystemPrompt.title(small.providerID).map(
             (x): ModelMessage => ({
@@ -130,7 +130,10 @@ export namespace SessionSummary {
           m.info.role === "assistant" && m.parts.some((p) => p.type === "step-finish" && p.reason !== "tool-calls"),
       )
     ) {
-      if (diffs.length > 0) {
+      let summary = messages
+        .findLast((m) => m.info.role === "assistant")
+        ?.parts.findLast((p) => p.type === "text")?.text
+      if (!summary || diffs.length > 0) {
         for (const msg of messages) {
           for (const part of msg.parts) {
             if (part.type === "tool" && part.state.status === "completed") {
@@ -141,7 +144,7 @@ export namespace SessionSummary {
         const result = await generateText({
           model: language,
           maxOutputTokens: 100,
-          providerOptions: ProviderTransform.providerOptions(small, options),
+          providerOptions: ProviderTransform.providerOptions(small, options, []),
           messages: [
             ...SystemPrompt.summarize(small.providerID).map(
               (x): ModelMessage => ({
@@ -164,10 +167,10 @@ export namespace SessionSummary {
             },
           },
         }).catch(() => {})
-        if (result) {
-          userMsg.summary.body = result.text
-        }
+        if (result) summary = result.text
       }
+      userMsg.summary.body = summary
+      log.info("body", { body: summary })
       await Session.updateMessage(userMsg)
     }
   }

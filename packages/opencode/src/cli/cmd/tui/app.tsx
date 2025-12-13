@@ -107,9 +107,7 @@ export function tui(input: { url: string; args: Args; onExit?: () => Promise<voi
     render(
       () => {
         return (
-          <ErrorBoundary
-            fallback={(error, reset) => <ErrorComponent error={error} reset={reset} onExit={onExit} mode={mode} />}
-          >
+          <ErrorBoundary fallback={(error, reset) => <ErrorComponent error={error} reset={reset} onExit={onExit} />}>
             <ArgsProvider {...input.args}>
               <ExitProvider onExit={onExit}>
                 <KVProvider>
@@ -175,20 +173,20 @@ function App() {
   // Update terminal window title based on current route and session
   createEffect(() => {
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle("opencode")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || SessionApi.isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle("opencode")
         return
       }
 
       // Truncate title to 40 chars max
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      renderer.setTerminalTitle(`oc | ${title}`)
     }
   })
 
@@ -538,12 +536,7 @@ function App() {
   )
 }
 
-function ErrorComponent(props: {
-  error: Error
-  reset: () => void
-  onExit: () => Promise<void>
-  mode?: "dark" | "light"
-}) {
+function ErrorComponent(props: { error: Error; reset: () => void; onExit: () => Promise<void> }) {
   const term = useTerminalDimensions()
   useKeyboard((evt) => {
     if (evt.ctrl && evt.name === "c") {
@@ -553,15 +546,6 @@ function ErrorComponent(props: {
   const [copied, setCopied] = createSignal(false)
 
   const issueURL = new URL("https://github.com/sst/opencode/issues/new?template=bug-report.yml")
-
-  // Choose safe fallback colors per mode since theme context may not be available
-  const isLight = props.mode === "light"
-  const colors = {
-    bg: isLight ? "#ffffff" : "#0a0a0a",
-    text: isLight ? "#1a1a1a" : "#eeeeee",
-    muted: isLight ? "#8a8a8a" : "#808080",
-    primary: isLight ? "#3b7dd8" : "#fab283",
-  }
 
   if (props.error.message) {
     issueURL.searchParams.set("title", `opentui: fatal: ${props.error.message}`)
@@ -583,31 +567,27 @@ function ErrorComponent(props: {
   }
 
   return (
-    <box flexDirection="column" gap={1} backgroundColor={colors.bg}>
+    <box flexDirection="column" gap={1}>
       <box flexDirection="row" gap={1} alignItems="center">
-        <text attributes={TextAttributes.BOLD} fg={colors.text}>
-          Please report an issue.
-        </text>
-        <box onMouseUp={copyIssueURL} backgroundColor={colors.primary} padding={1}>
-          <text attributes={TextAttributes.BOLD} fg={colors.bg}>
-            Copy issue URL (exception info pre-filled)
-          </text>
+        <text attributes={TextAttributes.BOLD}>Please report an issue.</text>
+        <box onMouseUp={copyIssueURL} backgroundColor="#565f89" padding={1}>
+          <text attributes={TextAttributes.BOLD}>Copy issue URL (exception info pre-filled)</text>
         </box>
-        {copied() && <text fg={colors.muted}>Successfully copied</text>}
+        {copied() && <text>Successfully copied</text>}
       </box>
       <box flexDirection="row" gap={2} alignItems="center">
-        <text fg={colors.text}>A fatal error occurred!</text>
-        <box onMouseUp={props.reset} backgroundColor={colors.primary} padding={1}>
-          <text fg={colors.bg}>Reset TUI</text>
+        <text>A fatal error occurred!</text>
+        <box onMouseUp={props.reset} backgroundColor="#565f89" padding={1}>
+          <text>Reset TUI</text>
         </box>
-        <box onMouseUp={props.onExit} backgroundColor={colors.primary} padding={1}>
-          <text fg={colors.bg}>Exit</text>
+        <box onMouseUp={props.onExit} backgroundColor="#565f89" padding={1}>
+          <text>Exit</text>
         </box>
       </box>
       <scrollbox height={Math.floor(term().height * 0.7)}>
-        <text fg={colors.muted}>{props.error.stack}</text>
+        <text>{props.error.stack}</text>
       </scrollbox>
-      <text fg={colors.text}>{props.error.message}</text>
+      <text>{props.error.message}</text>
     </box>
   )
 }

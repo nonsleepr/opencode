@@ -1,18 +1,12 @@
 import { Database, eq, sql } from "@opencode-ai/console-core/drizzle/index.js"
 import { IpTable } from "@opencode-ai/console-core/schema/ip.sql.js"
 import { UsageInfo } from "./provider/provider"
-import { ZenData } from "@opencode-ai/console-core/model.js"
 
-export function createTrialLimiter(trial: ZenData.Trial | undefined, ip: string, client: string) {
-  if (!trial) return
+export function createTrialLimiter(limit: number | undefined, ip: string) {
+  if (!limit) return
   if (!ip) return
 
-  const limit =
-    trial.limits.find((limit) => limit.client === client)?.limit ??
-    trial.limits.find((limit) => limit.client === undefined)?.limit
-  if (!limit) return
-
-  let _isTrial: boolean
+  let trial: boolean
 
   return {
     isTrial: async () => {
@@ -26,11 +20,11 @@ export function createTrialLimiter(trial: ZenData.Trial | undefined, ip: string,
           .then((rows) => rows[0]),
       )
 
-      _isTrial = (data?.usage ?? 0) < limit
-      return _isTrial
+      trial = (data?.usage ?? 0) < limit
+      return trial
     },
     track: async (usageInfo: UsageInfo) => {
-      if (!_isTrial) return
+      if (!trial) return
       const usage =
         usageInfo.inputTokens +
         usageInfo.outputTokens +

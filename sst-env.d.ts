@@ -65,6 +65,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "Enterprise": {
+      "type": "sst.cloudflare.SolidStart"
+      "url": string
+    }
     "EnterpriseStorage": {
       "name": string
       "type": "sst.cloudflare.Bucket"
@@ -116,10 +120,6 @@ declare module "sst" {
       "type": "sst.sst.Linkable"
       "value": string
     }
-    "Teams": {
-      "type": "sst.cloudflare.SolidStart"
-      "url": string
-    }
     "Web": {
       "type": "sst.cloudflare.Astro"
       "url": string
@@ -137,10 +137,6 @@ declare module "sst" {
       "value": string
     }
     "ZEN_MODELS4": {
-      "type": "sst.sst.Secret"
-      "value": string
-    }
-    "ZEN_MODELS5": {
       "type": "sst.sst.Secret"
       "value": string
     }

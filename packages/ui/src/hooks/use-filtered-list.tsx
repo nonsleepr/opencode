@@ -5,14 +5,14 @@ import { createStore } from "solid-js/store"
 import { createList } from "solid-list"
 
 export interface FilteredListProps<T> {
-  items: (filter: string) => T[] | Promise<T[]>
+  items: T[] | ((filter: string) => Promise<T[]>)
   key: (item: T) => string
   filterKeys?: string[]
   current?: T
   groupBy?: (x: T) => string
   sortBy?: (a: T, b: T) => number
   sortGroupsBy?: (a: { category: string; items: T[] }, b: { category: string; items: T[] }) => number
-  onSelect?: (value: T | undefined, index: number) => void
+  onSelect?: (value: T | undefined) => void
 }
 
 export function useFilteredList<T>(props: FilteredListProps<T>) {
@@ -22,7 +22,7 @@ export function useFilteredList<T>(props: FilteredListProps<T>) {
     () => store.filter,
     async (filter) => {
       const needle = filter?.toLowerCase()
-      const all = (await props.items(needle)) || []
+      const all = (typeof props.items === "function" ? await props.items(needle) : props.items) || []
       const result = pipe(
         all,
         (x) => {
@@ -63,9 +63,8 @@ export function useFilteredList<T>(props: FilteredListProps<T>) {
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Enter") {
       event.preventDefault()
-      const selectedIndex = flat().findIndex((x) => props.key(x) === list.active())
-      const selected = flat()[selectedIndex]
-      if (selected) props.onSelect?.(selected, selectedIndex)
+      const selected = flat().find((x) => props.key(x) === list.active())
+      if (selected) props.onSelect?.(selected)
     } else {
       list.onKeyDown(event)
     }

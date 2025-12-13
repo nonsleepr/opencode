@@ -3,7 +3,6 @@ import { Bus } from "@/bus"
 import { Log } from "../util/log"
 import { LSPClient } from "./client"
 import path from "path"
-import { pathToFileURL } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
 import { Config } from "../config/config"
@@ -271,7 +270,7 @@ export namespace LSP {
     return run((client) => {
       return client.connection.sendRequest("textDocument/hover", {
         textDocument: {
-          uri: pathToFileURL(input.file).href,
+          uri: `file://${input.file}`,
         },
         position: {
           line: input.line,

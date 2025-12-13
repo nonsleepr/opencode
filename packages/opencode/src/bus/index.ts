@@ -7,13 +7,7 @@ import { GlobalBus } from "./global"
 export namespace Bus {
   const log = Log.create({ service: "bus" })
   type Subscription = (event: any) => void
-
-  export const InstanceDisposed = BusEvent.define(
-    "server.instance.disposed",
-    z.object({
-      directory: z.string(),
-    }),
-  )
+  const disposedEventType = "server.instance.disposed"
 
   const state = Instance.state(
     () => {
@@ -27,7 +21,7 @@ export namespace Bus {
       const wildcard = entry.subscriptions.get("*")
       if (!wildcard) return
       const event = {
-        type: InstanceDisposed.type,
+        type: disposedEventType,
         properties: {
           directory: Instance.directory,
         },
@@ -36,6 +30,13 @@ export namespace Bus {
         sub(event)
       }
     },
+  )
+
+  export const InstanceDisposed = BusEvent.define(
+    disposedEventType,
+    z.object({
+      directory: z.string(),
+    }),
   )
 
   export async function publish<Definition extends BusEvent.Definition>(

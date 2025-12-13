@@ -1,10 +1,10 @@
 import { SECRET } from "./secret"
-import { domain, shortDomain } from "./stage"
+import { domain } from "./stage"
 
 const storage = new sst.cloudflare.Bucket("EnterpriseStorage")
 
-const teams = new sst.cloudflare.x.SolidStart("Teams", {
-  domain: shortDomain,
+const enterprise = new sst.cloudflare.x.SolidStart("Enterprise", {
+  domain: "enterprise." + domain,
   path: "packages/enterprise",
   buildCommand: "bun run build:cloudflare",
   environment: {

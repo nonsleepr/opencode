@@ -31,7 +31,7 @@ export default defineConfig({
     configSchema(),
     solidJs(),
     starlight({
-      title: "OpenCode",
+      title: "opencode",
       lastUpdated: true,
       expressiveCode: { themes: ["github-light", "github-dark"] },
       social: [

@@ -5,13 +5,8 @@ import type { TextPart } from "@opencode-ai/sdk/v2"
 import { Locale } from "@/util/locale"
 import { DialogMessage } from "./dialog-message"
 import { useDialog } from "../../ui/dialog"
-import type { PromptInfo } from "../../component/prompt/history"
 
-export function DialogTimeline(props: {
-  sessionID: string
-  onMove: (messageID: string) => void
-  setPrompt?: (prompt: PromptInfo) => void
-}) {
+export function DialogTimeline(props: { sessionID: string; onMove: (messageID: string) => void }) {
   const sync = useSync()
   const dialog = useDialog()
 
@@ -31,13 +26,10 @@ export function DialogTimeline(props: {
         value: message.id,
         footer: Locale.time(message.time.created),
         onSelect: (dialog) => {
-          dialog.replace(() => (
-            <DialogMessage messageID={message.id} sessionID={props.sessionID} setPrompt={props.setPrompt} />
-          ))
+          dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
         },
       })
     }
-    result.reverse()
     return result
   })
 

@@ -1,0 +1,25 @@
+Retrieves output and status from background processes started with the bash tool.
+
+Usage:
+- Provide the PID returned from a background bash command
+- Optionally specify which output stream to display with the stream parameter
+- Returns stdout, stderr (or combined output), exit code, and completion status
+- Works for both running and completed processes
+
+Stream Parameter:
+- stream="combined" (default): Shows stdout and stderr interleaved in chronological order - useful for debugging when timing matters
+- stream="stdout": Shows only stdout output - useful for filtering normal output
+- stream="stderr": Shows only stderr output - useful for filtering error messages
+
+Features:
+- Shows full command details and working directory
+- Displays timestamps for start/end times and duration
+- By default, interleaves stdout and stderr to preserve execution order
+- Indicates if output was truncated (60k for combined, 30k per stream)
+- Returns exit code and signal for completed processes
+
+Tips:
+- Check process status regularly to see if long-running commands have completed
+- Use stream="combined" (default) when you need to see the exact order of outputs
+- Use stream="stdout" or stream="stderr" when you want to isolate specific output
+- Use this tool to monitor progress of background operations

@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, Show, type ValidComponent } from "solid-js"
+import { createEffect, Show, type ValidComponent } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 
@@ -14,7 +14,6 @@ export const Typewriter = <T extends ValidComponent = "p">(props: { text?: strin
     if (!text) return
 
     let i = 0
-    const timeouts: ReturnType<typeof setTimeout>[] = []
     setStore("typing", true)
     setStore("displayed", "")
     setStore("cursor", true)
@@ -30,18 +29,14 @@ export const Typewriter = <T extends ValidComponent = "p">(props: { text?: strin
       if (i < text.length) {
         setStore("displayed", text.slice(0, i + 1))
         i++
-        timeouts.push(setTimeout(type, getTypingDelay()))
+        setTimeout(type, getTypingDelay())
       } else {
         setStore("typing", false)
-        timeouts.push(setTimeout(() => setStore("cursor", false), 2000))
+        setTimeout(() => setStore("cursor", false), 2000)
       }
     }
 
-    timeouts.push(setTimeout(type, 200))
-
-    onCleanup(() => {
-      for (const timeout of timeouts) clearTimeout(timeout)
-    })
+    setTimeout(type, 200)
   })
 
   return (

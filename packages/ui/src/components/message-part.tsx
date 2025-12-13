@@ -8,7 +8,6 @@ import {
   ToolPart,
   UserMessage,
 } from "@opencode-ai/sdk/v2"
-import { useData } from "../context"
 import { useDiffComponent } from "../context/diff"
 import { BasicTool } from "./basic-tool"
 import { GenericTool } from "./basic-tool"
@@ -17,33 +16,26 @@ import { Icon } from "./icon"
 import { Checkbox } from "./checkbox"
 import { DiffChanges } from "./diff-changes"
 import { Markdown } from "./markdown"
-import { getDirectory as _getDirectory, getFilename } from "@opencode-ai/util/path"
+import { getDirectory, getFilename } from "@opencode-ai/util/path"
+import { sanitizePart } from "@opencode-ai/util/sanitize"
+import { unwrap } from "solid-js/store"
 
 export interface MessageProps {
   message: MessageType
   parts: PartType[]
+  sanitize?: RegExp
 }
 
 export interface MessagePartProps {
   part: PartType
   message: MessageType
   hideDetails?: boolean
+  sanitize?: RegExp
 }
 
 export type PartComponent = Component<MessagePartProps>
 
 export const PART_MAPPING: Record<string, PartComponent | undefined> = {}
-
-function relativizeProjectPaths(text: string, directory?: string) {
-  if (!text) return ""
-  if (!directory) return text
-  return text.split(directory).join("")
-}
-
-function getDirectory(path: string | undefined) {
-  const data = useData()
-  return relativizeProjectPaths(_getDirectory(path), data.directory)
-}
 
 export function registerPartComponent(type: string, component: PartComponent) {
   PART_MAPPING[type] = component
@@ -57,20 +49,27 @@ export function Message(props: MessageProps) {
       </Match>
       <Match when={props.message.role === "assistant" && props.message}>
         {(assistantMessage) => (
-          <AssistantMessageDisplay message={assistantMessage() as AssistantMessage} parts={props.parts} />
+          <AssistantMessageDisplay
+            message={assistantMessage() as AssistantMessage}
+            parts={props.parts}
+            sanitize={props.sanitize}
+          />
         )}
       </Match>
     </Switch>
   )
 }
 
-export function AssistantMessageDisplay(props: { message: AssistantMessage; parts: PartType[] }) {
+export function AssistantMessageDisplay(props: { message: AssistantMessage; parts: PartType[]; sanitize?: RegExp }) {
   const filteredParts = createMemo(() => {
     return props.parts?.filter((x) => {
+      if (x.type === "reasoning") return false
       return x.type !== "tool" || (x as ToolPart).tool !== "todoread"
     })
   })
-  return <For each={filteredParts()}>{(part) => <Part part={part} message={props.message} />}</For>
+  return (
+    <For each={filteredParts()}>{(part) => <Part part={part} message={props.message} sanitize={props.sanitize} />}</For>
+  )
 }
 
 export function UserMessageDisplay(props: { message: UserMessage; parts: PartType[] }) {
@@ -85,9 +84,10 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
 
 export function Part(props: MessagePartProps) {
   const component = createMemo(() => PART_MAPPING[props.part.type])
+  const part = createMemo(() => sanitizePart(unwrap(props.part), props.sanitize))
   return (
     <Show when={component()}>
-      <Dynamic component={component()} part={props.part} message={props.message} hideDetails={props.hideDetails} />
+      <Dynamic component={component()} part={part()} message={props.message} hideDetails={props.hideDetails} />
     </Show>
   )
 }
@@ -175,15 +175,12 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
 }
 
 PART_MAPPING["text"] = function TextPartDisplay(props) {
-  const data = useData()
   const part = props.part as TextPart
-  const content = createMemo(() => (part.text ?? "").trim())
-  const displayText = createMemo(() => relativizeProjectPaths(content(), data.directory))
-
+  const sanitized = createMemo(() => (props.sanitize ? (sanitizePart(unwrap(part), props.sanitize) as TextPart) : part))
   return (
-    <Show when={displayText()}>
+    <Show when={part.text.trim()}>
       <div data-component="text-part">
-        <Markdown text={displayText()} />
+        <Markdown text={sanitized().text.trim()} />
       </div>
     </Show>
   )
@@ -327,7 +324,7 @@ ToolRegistry.register({
           subtitle: props.input.description,
         }}
       >
-        <div data-component="tool-output" data-scrollable>
+        <div data-component="tool-output">
           <Markdown
             text={`\`\`\`command\n$ ${props.input.command}${props.output ? "\n\n" + props.output : ""}\n\`\`\``}
           />
@@ -343,7 +340,6 @@ ToolRegistry.register({
     const diffComponent = useDiffComponent()
     return (
       <BasicTool
-        defaultOpen
         icon="code-lines"
         trigger={
           <div data-component="edit-trigger">

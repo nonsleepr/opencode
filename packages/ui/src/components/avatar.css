@@ -1,6 +1,5 @@
 [data-component="avatar"] {
   --avatar-bg: var(--color-surface-info-base);
-  --avatar-fg: var(--color-text-base);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -11,7 +10,7 @@
   font-weight: 500;
   text-transform: uppercase;
   background-color: var(--avatar-bg);
-  color: var(--avatar-fg);
+  color: oklch(from var(--avatar-bg) calc(l * 0.72) calc(c * 8) h);
 }
 
 [data-component="avatar"][data-has-image] {

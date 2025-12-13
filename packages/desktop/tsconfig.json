@@ -14,11 +14,11 @@
     "strict": true,
     "noEmit": false,
     "emitDeclarationOnly": true,
-    "outDir": "node_modules/.ts-dist",
+    "outDir": "ts-dist",
     "isolatedModules": true,
     "paths": {
       "@/*": ["./src/*"]
     }
   },
-  "exclude": ["dist", "ts-dist"]
+  "exclude": ["dist"]
 }

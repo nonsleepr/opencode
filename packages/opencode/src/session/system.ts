@@ -4,6 +4,7 @@ import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
 
 import { Instance } from "../project/instance"
+import { getBackgroundProcessManager } from "../shell/background"
 import path from "path"
 import os from "os"
 
@@ -58,6 +59,69 @@ export namespace SystemPrompt {
         `</files>`,
       ].join("\n"),
     ]
+  }
+
+  export async function backgroundProcesses(sessionID: string) {
+    const manager = getBackgroundProcessManager()
+    const processes = manager.listProcessesBySession(sessionID)
+
+    const now = Date.now()
+    const fiveMinutesAgo = now - 5 * 60 * 1000
+
+    // Filter to running processes + completed/killed processes from last 5 minutes
+    const relevantProcesses = processes.filter((process) => {
+      if (process.status === "running") return true
+      if (process.endTime && process.endTime >= fiveMinutesAgo) return true
+      return false
+    })
+
+    if (relevantProcesses.length === 0) {
+      return []
+    }
+
+    const formatDuration = (startTime: number, endTime: number | null) => {
+      const duration = (endTime ?? now) - startTime
+      const seconds = Math.floor(duration / 1000)
+      if (seconds < 60) return `${seconds}s`
+      const minutes = Math.floor(seconds / 60)
+      const remainingSeconds = seconds % 60
+      if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
+      const hours = Math.floor(minutes / 60)
+      const remainingMinutes = minutes % 60
+      return `${hours}h ${remainingMinutes}m`
+    }
+
+    const formatSize = (bytes: number) => {
+      if (bytes < 1024) return `${bytes}B`
+      const kb = bytes / 1024
+      if (kb < 1024) return `${kb.toFixed(1)}KB`
+      const mb = kb / 1024
+      return `${mb.toFixed(1)}MB`
+    }
+
+    const processLines = relevantProcesses.map((process) => {
+      const info = process.getInfo()
+      const statusAttr =
+        info.status === "running"
+          ? `status="running"`
+          : info.status === "completed"
+            ? `status="completed" exit_code="${info.exitCode}"`
+            : `status="killed"`
+
+      const outputSize = info.combined.length
+      const startDate = new Date(info.startTime).toISOString()
+
+      return [
+        `  <process pid="${info.pid}" ${statusAttr} started="${startDate}">`,
+        `    command: ${info.command}`,
+        `    workdir: ${info.workdir}`,
+        `    runtime: ${formatDuration(info.startTime, info.endTime)}`,
+        `    output_size: ${formatSize(outputSize)}`,
+        `  </process>`,
+      ].join("\n")
+    })
+
+    return [["<background_processes>", ...processLines, "</background_processes>"].join("\n")]
   }
 
   const LOCAL_RULE_FILES = [

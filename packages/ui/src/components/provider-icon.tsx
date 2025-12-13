@@ -4,11 +4,11 @@ import sprite from "./provider-icons/sprite.svg"
 import type { IconName } from "./provider-icons/types"
 
 export type ProviderIconProps = JSX.SVGElementTags["svg"] & {
-  id: IconName
+  name: IconName
 }
 
 export const ProviderIcon: Component<ProviderIconProps> = (props) => {
-  const [local, rest] = splitProps(props, ["id", "class", "classList"])
+  const [local, rest] = splitProps(props, ["name", "class", "classList"])
   return (
     <svg
       data-component="provider-icon"
@@ -18,7 +18,7 @@ export const ProviderIcon: Component<ProviderIconProps> = (props) => {
         [local.class ?? ""]: !!local.class,
       }}
     >
-      <use href={`${sprite}#${local.id}`} />
+      <use href={`${sprite}#${local.name}`} />
     </svg>
   )
 }

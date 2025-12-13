@@ -275,12 +275,3 @@ export const terraform: Info = {
     return Bun.which("terraform") !== null
   },
 }
-
-export const latexindent: Info = {
-  name: "latexindent",
-  command: ["latexindent", "-w", "-s", "$FILE"],
-  extensions: [".tex"],
-  async enabled() {
-    return Bun.which("latexindent") !== null
-  },
-}

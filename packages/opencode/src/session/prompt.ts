@@ -5,7 +5,6 @@ import z from "zod"
 import { Identifier } from "../id/id"
 import { MessageV2 } from "./message-v2"
 import { Log } from "../util/log"
-import { Flag } from "../flag/flag"
 import { SessionRevert } from "./revert"
 import { Session } from "."
 import { Agent } from "../agent/agent"
@@ -30,7 +29,7 @@ import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { defer } from "../util/defer"
-import { clone, mergeDeep, pipe } from "remeda"
+import { mergeDeep, pipe } from "remeda"
 import { ToolRegistry } from "../tool/registry"
 import { Wildcard } from "../util/wildcard"
 import { MCP } from "../mcp"
@@ -50,7 +49,6 @@ import { fn } from "@/util/fn"
 import { SessionProcessor } from "./processor"
 import { TaskTool } from "@/tool/task"
 import { SessionStatus } from "./status"
-import { Shell } from "@/shell/shell"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -340,7 +338,6 @@ export namespace SessionPrompt {
             },
           },
         })) as MessageV2.ToolPart
-        let executionError: Error | undefined
         const result = await taskTool
           .execute(
             {
@@ -365,11 +362,7 @@ export namespace SessionPrompt {
               },
             },
           )
-          .catch((error) => {
-            executionError = error
-            log.error("subtask execution failed", { error, agent: task.agent, description: task.description })
-            return undefined
-          })
+          .catch(() => {})
         assistantMessage.finish = "tool-calls"
         assistantMessage.time.completed = Date.now()
         await Session.updateMessage(assistantMessage)
@@ -395,7 +388,7 @@ export namespace SessionPrompt {
             ...part,
             state: {
               status: "error",
-              error: executionError ? `Tool execution failed: ${executionError.message}` : "Tool execution failed",
+              error: "Tool execution failed",
               time: {
                 start: part.state.status === "running" ? part.state.time.start : Date.now(),
                 end: Date.now(),
@@ -483,6 +476,7 @@ export namespace SessionPrompt {
         agent,
         system: lastUser.system,
         isLastStep,
+        sessionID,
       })
       const tools = await resolveTools({
         agent,
@@ -522,33 +516,28 @@ export namespace SessionPrompt {
         })
       }
 
-      // Deep copy message history so that modifications made by plugins do not
-      // affect the original messages
-      const sessionMessages = clone(
-        msgs.filter((m) => {
-          if (m.info.role !== "assistant" || m.info.error === undefined) {
-            return true
-          }
-          if (
-            MessageV2.AbortedError.isInstance(m.info.error) &&
-            m.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")
-          ) {
-            return true
-          }
-          return false
-        }),
-      )
-
-      await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
-
-      const messages: ModelMessage[] = [
+      const messages = [
         ...system.map(
           (x): ModelMessage => ({
             role: "system",
             content: x,
           }),
         ),
-        ...MessageV2.toModelMessage(sessionMessages),
+        ...MessageV2.toModelMessage(
+          msgs.filter((m) => {
+            if (m.info.role !== "assistant" || m.info.error === undefined) {
+              return true
+            }
+            if (
+              MessageV2.AbortedError.isInstance(m.info.error) &&
+              m.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")
+            ) {
+              return true
+            }
+
+            return false
+          }),
+        ),
         ...(isLastStep
           ? [
               {
@@ -558,7 +547,6 @@ export namespace SessionPrompt {
             ]
           : []),
       ]
-
       const result = await processor.process({
         onError(error) {
           log.error("stream error", {
@@ -592,7 +580,6 @@ export namespace SessionPrompt {
                 "x-opencode-project": Instance.project.id,
                 "x-opencode-session": sessionID,
                 "x-opencode-request": lastUser.id,
-                "x-opencode-client": Flag.OPENCODE_CLIENT,
               }
             : undefined),
           ...model.headers,
@@ -607,7 +594,7 @@ export namespace SessionPrompt {
           OUTPUT_TOKEN_MAX,
         ),
         abortSignal: abort,
-        providerOptions: ProviderTransform.providerOptions(model, params.options),
+        providerOptions: ProviderTransform.providerOptions(model, params.options, messages),
         stopWhen: stepCountIs(1),
         temperature: params.temperature,
         topP: params.topP,
@@ -678,6 +665,7 @@ export namespace SessionPrompt {
     agent: Agent.Info
     model: Provider.Model
     isLastStep?: boolean
+    sessionID: string
   }) {
     let system = SystemPrompt.header(input.model.providerID)
     system.push(
@@ -688,6 +676,7 @@ export namespace SessionPrompt {
       })(),
     )
     system.push(...(await SystemPrompt.environment()))
+    system.push(...(await SystemPrompt.backgroundProcesses(input.sessionID)))
     system.push(...(await SystemPrompt.custom()))
 
     if (input.isLastStep) {
@@ -1173,12 +1162,6 @@ export namespace SessionPrompt {
   })
   export type ShellInput = z.infer<typeof ShellInput>
   export async function shell(input: ShellInput) {
-    const abort = start(input.sessionID)
-    if (!abort) {
-      throw new Session.BusyError(input.sessionID)
-    }
-    using _ = defer(() => cancel(input.sessionID))
-
     const session = await Session.get(input.sessionID)
     if (session.revert) {
       SessionRevert.cleanup(session)
@@ -1251,10 +1234,8 @@ export namespace SessionPrompt {
       },
     }
     await Session.updatePart(part)
-    const shell = Shell.preferred()
-    const shellName = (
-      process.platform === "win32" ? path.win32.basename(shell, ".exe") : path.basename(shell)
-    ).toLowerCase()
+    const shell = process.env["SHELL"] ?? (process.platform === "win32" ? process.env["COMSPEC"] || "cmd.exe" : "bash")
+    const shellName = path.basename(shell).toLowerCase()
 
     const invocations: Record<string, { args: string[] }> = {
       nu: {
@@ -1284,21 +1265,17 @@ export namespace SessionPrompt {
           `,
         ],
       },
-      // Windows cmd
-      cmd: {
+      // Windows cmd.exe
+      "cmd.exe": {
         args: ["/c", input.command],
       },
       // Windows PowerShell
-      powershell: {
-        args: ["-NoProfile", "-Command", input.command],
-      },
-      pwsh: {
+      "powershell.exe": {
         args: ["-NoProfile", "-Command", input.command],
       },
       // Fallback: any shell that doesn't match those above
-      //  - No -l, for max compatibility
       "": {
-        args: ["-c", `${input.command}`],
+        args: ["-c", "-l", `${input.command}`],
       },
     }
 
@@ -1339,34 +1316,11 @@ export namespace SessionPrompt {
       }
     })
 
-    let aborted = false
-    let exited = false
-
-    const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-    if (abort.aborted) {
-      aborted = true
-      await kill()
-    }
-
-    const abortHandler = () => {
-      aborted = true
-      void kill()
-    }
-
-    abort.addEventListener("abort", abortHandler, { once: true })
-
     await new Promise<void>((resolve) => {
       proc.on("close", () => {
-        exited = true
-        abort.removeEventListener("abort", abortHandler)
         resolve()
       })
     })
-
-    if (aborted) {
-      output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
-    }
     msg.time.completed = Date.now()
     await Session.updateMessage(msg)
     if (part.state.status === "running") {
@@ -1522,7 +1476,7 @@ export namespace SessionPrompt {
     await generateText({
       // use higher # for reasoning models since reasoning tokens eat up a lot of the budget
       maxOutputTokens: small.capabilities.reasoning ? 3000 : 20,
-      providerOptions: ProviderTransform.providerOptions(small, options),
+      providerOptions: ProviderTransform.providerOptions(small, options, []),
       messages: [
         ...SystemPrompt.title(small.providerID).map(
           (x): ModelMessage => ({

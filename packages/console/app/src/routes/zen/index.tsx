@@ -38,7 +38,7 @@ export default function Home() {
       <Meta name="opencode:auth" content={loggedin() ? "true" : "false"} />
 
       <div data-component="container">
-        <Header zen hideGetStarted />
+        <Header zen />
 
         <div data-component="content">
           <section data-component="hero">

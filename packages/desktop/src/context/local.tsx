@@ -6,7 +6,6 @@ import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { base64Encode } from "@opencode-ai/util/encode"
-import { useProviders } from "@/hooks/use-providers"
 
 export type LocalFile = FileNode &
   Partial<{
@@ -26,7 +25,6 @@ export type View = LocalFile["view"]
 
 export type LocalModel = Omit<Model, "provider"> & {
   provider: Provider
-  latest?: boolean
 }
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -38,17 +36,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   init: () => {
     const sdk = useSDK()
     const sync = useSync()
-    const providers = useProviders()
 
     function isModelValid(model: ModelKey) {
-      const provider = providers.all().find((x) => x.id === model.providerID)
-      return (
-        !!provider?.models[model.modelID] &&
-        providers
-          .connected()
-          .map((p) => p.id)
-          .includes(model.providerID)
-      )
+      const provider = sync.data.provider.find((x) => x.id === model.providerID)
+      return !!provider?.models[model.modelID]
     }
 
     function getFirstValidModel(...modelFns: (() => ModelKey | undefined)[]) {
@@ -123,14 +114,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
 
       const list = createMemo(() =>
-        providers.connected().flatMap((p) =>
-          Object.values(p.models).map((m) => ({
-            ...m,
-            name: m.name.replace("(latest)", "").trim(),
-            provider: p,
-            latest: m.name.includes("(latest)"),
-          })),
-        ),
+        sync.data.provider.flatMap((p) => Object.values(p.models).map((m) => ({ ...m, provider: p }) as LocalModel)),
       )
       const find = (key: ModelKey) => list().find((m) => m.id === key?.modelID && m.provider.id === key.providerID)
 
@@ -150,17 +134,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return item
           }
         }
-
-        for (const p of providers.connected()) {
-          if (p.id in providers.default()) {
-            return {
-              providerID: p.id,
-              modelID: providers.default()[p.id],
-            }
-          }
+        const provider = sync.data.provider[0]
+        const model = Object.values(provider.models)[0]
+        return {
+          providerID: provider.id,
+          modelID: model.id,
         }
-
-        throw new Error("No default model found")
       })
 
       const currentModel = createMemo(() => {

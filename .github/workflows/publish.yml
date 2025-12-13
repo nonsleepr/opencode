@@ -31,7 +31,7 @@ permissions:
 jobs:
   publish:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    if: github.repository == 'sst/opencode'
+    if: github.repository == 'sst/opencode' && github.ref == 'refs/heads/dev'
     steps:
       - uses: actions/checkout@v3
         with:
@@ -55,7 +55,7 @@ jobs:
 
       - name: Install OpenCode
         if: inputs.bump || inputs.version
-        run: bun i -g opencode-ai@1.0.143
+        run: curl -fsSL https://opencode.ai/install | bash
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -64,20 +64,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish
-        id: publish
-        run: ./script/publish.ts
+        run: |
+          ./script/publish.ts
         env:
           OPENCODE_BUMP: ${{ inputs.bump }}
           OPENCODE_VERSION: ${{ inputs.version }}
@@ -85,12 +79,9 @@ jobs:
           AUR_KEY: ${{ secrets.AUR_KEY }}
           GITHUB_TOKEN: ${{ secrets.SST_GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: false
-    outputs:
-      releaseId: ${{ steps.publish.outputs.releaseId }}
-      tagName: ${{ steps.publish.outputs.tagName }}
 
   publish-tauri:
-    needs: publish
+    if: false # inputs.bump || inputs.version
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -100,9 +91,9 @@ jobs:
             target: x86_64-apple-darwin
           - host: macos-latest
             target: aarch64-apple-darwin
-          - host: blacksmith-4vcpu-windows-2025
+          - host: windows-latest
             target: x86_64-pc-windows-msvc
-          - host: blacksmith-4vcpu-ubuntu-2404
+          - host: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.settings.host }}
     steps:
@@ -135,7 +126,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: install dependencies (ubuntu only)
-        if: contains(matrix.settings.host, 'ubuntu')
+        if: startsWith(matrix.settings.host, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
@@ -167,7 +158,7 @@ jobs:
 
       # Fixes AppImage build issues, can be removed when https://github.com/tauri-apps/tauri/pull/12491 is released
       - run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage
-        if: contains(matrix.settings.host, 'ubuntu')
+        if: startsWith(matrix.settings.host, 'ubuntu')
 
       - name: Build and upload artifacts
         uses: tauri-apps/tauri-action@390cbe447412ced1303d35abe75287949e43437a
@@ -185,9 +176,7 @@ jobs:
         with:
           projectPath: packages/tauri
           uploadWorkflowArtifacts: true
-          tauriScript: ${{ (contains(matrix.settings.host, 'ubuntu') && 'cargo tauri') || '' }}
+          tauriScript: ${{ (startsWith(matrix.settings.host, 'ubuntu') && 'cargo tauri') || '' }}
           args: --target ${{ matrix.settings.target }}
           updaterJsonPreferNsis: true
-          releaseId: ${{ needs.publish.outputs.releaseId }}
-          tagName: ${{ needs.publish.outputs.tagName }}
-          releaseAssetNamePattern: opencode-desktop-[platform]-[arch][ext]
+          # releaseId: TODO

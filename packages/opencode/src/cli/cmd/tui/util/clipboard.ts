@@ -61,7 +61,7 @@ export namespace Clipboard {
   const getCopyMethod = lazy(() => {
     const os = platform()
 
-    if (os === "darwin" && Bun.which("osascript")) {
+    if (os === "darwin" && Bun.which("oascript")) {
       console.log("clipboard: using osascript")
       return async (text: string) => {
         const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')

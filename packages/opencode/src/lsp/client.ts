@@ -1,7 +1,6 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import path from "path"
-import { pathToFileURL, fileURLToPath } from "url"
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node"
 import type { Diagnostic as VSCodeDiagnostic } from "vscode-languageserver-types"
 import { Log } from "../util/log"
@@ -47,7 +46,7 @@ export namespace LSPClient {
 
     const diagnostics = new Map<string, Diagnostic[]>()
     connection.onNotification("textDocument/publishDiagnostics", (params) => {
-      const path = fileURLToPath(params.uri)
+      const path = new URL(params.uri).pathname
       l.info("textDocument/publishDiagnostics", {
         path,
       })
@@ -69,7 +68,7 @@ export namespace LSPClient {
     connection.onRequest("workspace/workspaceFolders", async () => [
       {
         name: "workspace",
-        uri: pathToFileURL(input.root).href,
+        uri: "file://" + input.root,
       },
     ])
     connection.listen()
@@ -77,12 +76,12 @@ export namespace LSPClient {
     l.info("sending initialize")
     await withTimeout(
       connection.sendRequest("initialize", {
-        rootUri: pathToFileURL(input.root).href,
+        rootUri: "file://" + input.root,
         processId: input.server.process.pid,
         workspaceFolders: [
           {
             name: "workspace",
-            uri: pathToFileURL(input.root).href,
+            uri: "file://" + input.root,
           },
         ],
         initializationOptions: {
@@ -155,7 +154,7 @@ export namespace LSPClient {
             })
             await connection.sendNotification("textDocument/didChange", {
               textDocument: {
-                uri: pathToFileURL(input.path).href,
+                uri: `file://` + input.path,
                 version: next,
               },
               contentChanges: [{ text }],
@@ -167,7 +166,7 @@ export namespace LSPClient {
           diagnostics.delete(input.path)
           await connection.sendNotification("textDocument/didOpen", {
             textDocument: {
-              uri: pathToFileURL(input.path).href,
+              uri: `file://` + input.path,
               languageId,
               version: 0,
               text,
