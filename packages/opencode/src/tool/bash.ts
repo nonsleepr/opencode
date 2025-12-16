@@ -14,10 +14,15 @@ import { Permission } from "@/permission"
 import { fileURLToPath } from "url"
 import { Flag } from "@/flag/flag.ts"
 import path from "path"
+import { iife } from "@/util/iife"
+import { getBackgroundProcessManager } from "@/shell/background"
 import { Shell } from "@/shell/shell"
 
 const MAX_OUTPUT_LENGTH = Flag.OPENCODE_EXPERIMENTAL_BASH_MAX_OUTPUT_LENGTH || 30_000
-const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
+const SIGKILL_TIMEOUT_MS = 200
+const DEFAULT_WAIT_SECONDS = 5
+const MAX_WAIT_SECONDS = 600
+const FAST_FAILURE_CHECK_MS = 1000 // 1 second
 
 export const log = Log.create({ service: "bash-tool" })
 
@@ -50,15 +55,59 @@ const parser = lazy(async () => {
 })
 
 // TODO: we may wanna rename this tool so it works better on other shells
+
+// Helper function to format output with metadata
+function formatOutput(
+  output: string,
+  metadata: {
+    truncated?: boolean
+    aborted?: boolean
+    movedToBackground?: boolean
+    pid?: number
+    exitCode?: number | null
+  },
+): string {
+  let result = output
+  const tags: string[] = []
+
+  if (metadata.truncated) {
+    tags.push(`bash tool truncated output as it exceeded ${MAX_OUTPUT_LENGTH} char limit`)
+  }
+
+  if (metadata.aborted) {
+    tags.push("User aborted the command")
+  }
+
+  if (metadata.movedToBackground && metadata.pid) {
+    tags.push(`Command exceeded wait time and was moved to background with PID: ${metadata.pid}`)
+    tags.push(`Use process_output tool with pid=${metadata.pid} to retrieve output`)
+    tags.push(`Use kill ${metadata.pid} bash command to terminate the process`)
+  }
+
+  // Add exit code to output if non-zero (but not for backgrounded processes that are still running)
+  if (!metadata.movedToBackground && metadata.exitCode !== null && metadata.exitCode !== 0) {
+    tags.push(`command exited with code ${metadata.exitCode}`)
+  }
+
+  if (tags.length > 0) {
+    result += "\n\n<bash_metadata>\n" + tags.join("\n") + "\n</bash_metadata>"
+  }
+
+  return result
+}
+
 export const BashTool = Tool.define("bash", async () => {
-  const shell = Shell.acceptable()
+  const shell = iife(() => {
+    const s = process.env.SHELL
+    if (!s) return process.platform === "win32" ? true : "/bin/bash"
+    return s
+  })
   log.info("bash tool using shell", { shell })
 
   return {
     description: DESCRIPTION.replaceAll("${directory}", Instance.directory),
     parameters: z.object({
       command: z.string().describe("The command to execute"),
-      timeout: z.number().describe("Optional timeout in milliseconds").optional(),
       workdir: z
         .string()
         .describe(
@@ -70,20 +119,29 @@ export const BashTool = Tool.define("bash", async () => {
         .describe(
           "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
         ),
+      wait: z
+        .number()
+        .min(0)
+        .describe(
+          "Seconds to wait before moving command to background (default: 5, max: 600). Use wait=0 for immediate backgrounding. Background processes run indefinitely. Use process_output and process_input tools to interact with background processes.",
+        )
+        .optional(),
     }),
     async execute(params, ctx) {
       const cwd = params.workdir || Instance.directory
-      if (params.timeout !== undefined && params.timeout < 0) {
-        throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
-      }
-      const timeout = params.timeout ?? DEFAULT_TIMEOUT
+
+      // Clamp wait parameter silently
+      const waitSeconds =
+        params.wait !== undefined ? Math.max(0, Math.min(params.wait, MAX_WAIT_SECONDS)) : DEFAULT_WAIT_SECONDS
+      const waitMs = waitSeconds * 1000
+
       const tree = await parser().then((p) => p.parse(params.command))
       if (!tree) {
         throw new Error("Failed to parse command")
       }
       const agent = await Agent.get(ctx.agent)
 
-      const checkExternalDirectory = async (dir: string) => {
+      const validateDirectoryPermissions = async (dir: string) => {
         if (Filesystem.contains(Instance.directory, dir)) return
         const title = `This command references paths outside of ${Instance.directory}`
         if (agent.permission.external_directory === "ask") {
@@ -111,7 +169,7 @@ export const BashTool = Tool.define("bash", async () => {
         }
       }
 
-      await checkExternalDirectory(cwd)
+      await validateDirectoryPermissions(cwd)
 
       const permissions = agent.permission.bash
 
@@ -151,7 +209,7 @@ export const BashTool = Tool.define("bash", async () => {
                   ? resolved.replace(/^\/([a-z])\//, (_, drive) => `${drive.toUpperCase()}:\\`).replace(/\//g, "\\")
                   : resolved
 
-              await checkExternalDirectory(normalized)
+              await validateDirectoryPermissions(normalized)
             }
           }
         }
@@ -195,6 +253,63 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
+      // **EXPLICIT BACKGROUND MODE** - wait: 0
+      if (waitSeconds === 0) {
+        const manager = getBackgroundProcessManager()
+        const { pid, process: bgProcess } = manager.start(params.command, cwd, ctx.sessionID, shell)
+
+        // Initialize metadata streaming
+        ctx.metadata({
+          metadata: {
+            output: "",
+            description: params.description,
+            pid,
+          },
+        })
+
+        // Wait up to 1 second for fast failures, but return immediately if process exits
+        await Promise.race([bgProcess.wait(), Bun.sleep(FAST_FAILURE_CHECK_MS)])
+
+        if (bgProcess.exitError) {
+          throw bgProcess.exitError
+        }
+
+        if (bgProcess.status === "completed") {
+          const info = bgProcess.getInfo()
+          const output = (info.stdout + info.stderr).trim()
+
+          // Stream final output
+          ctx.metadata({
+            metadata: {
+              output,
+              description: params.description,
+              pid,
+            },
+          })
+
+          if (info.exitCode !== null && info.exitCode !== 0) {
+            throw new Error(
+              `Background process ${pid} failed during fast-failure check with exit code ${info.exitCode}\n\n${output}`,
+            )
+          }
+        }
+
+        const output = `Background process started with PID: ${pid}\n\nUse the following tools to interact with this process:\n- process_output: Retrieve output and status\n- process_input: Send input to the process\n- kill ${pid}: Terminate the process`
+
+        return {
+          title: params.description,
+          metadata: {
+            output,
+            description: params.description,
+            pid,
+            exit: null,
+          },
+          output,
+        }
+      }
+
+      // **AUTO-BACKGROUND MODE** - Run for waitMs, then background if still running
+      const startTime = Date.now() // Track original start time
       const proc = spawn(params.command, {
         shell,
         cwd,
@@ -206,6 +321,11 @@ export const BashTool = Tool.define("bash", async () => {
       })
 
       let output = ""
+      const combinedOutput: Array<{
+        timestamp: number
+        stream: "stdout" | "stderr"
+        text: string
+      }> = []
 
       // Initialize metadata with empty output
       ctx.metadata({
@@ -227,12 +347,32 @@ export const BashTool = Tool.define("bash", async () => {
         }
       }
 
-      proc.stdout?.on("data", append)
-      proc.stderr?.on("data", append)
+      const appendStdout = (chunk: Buffer) => {
+        const text = chunk.toString()
+        append(chunk)
+        combinedOutput.push({
+          timestamp: Date.now(),
+          stream: "stdout",
+          text,
+        })
+      }
 
-      let timedOut = false
+      const appendStderr = (chunk: Buffer) => {
+        const text = chunk.toString()
+        append(chunk)
+        combinedOutput.push({
+          timestamp: Date.now(),
+          stream: "stderr",
+          text,
+        })
+      }
+
+      proc.stdout?.on("data", appendStdout)
+      proc.stderr?.on("data", appendStderr)
+
       let aborted = false
       let exited = false
+      let movedToBackground = false
 
       const kill = () => Shell.killTree(proc, { exited: () => exited })
 
@@ -248,15 +388,26 @@ export const BashTool = Tool.define("bash", async () => {
 
       ctx.abort.addEventListener("abort", abortHandler, { once: true })
 
-      const timeoutTimer = setTimeout(() => {
-        timedOut = true
-        void kill()
-      }, timeout + 100)
+      // Auto-background timer
+      let autoBackgroundResolver: (() => void) | null = null
+      const autoBackgroundTimer = setTimeout(() => {
+        if (!exited && !aborted) {
+          movedToBackground = true
+          log.info("moving command to background", { command: params.command, waitSeconds })
+          if (autoBackgroundResolver) {
+            autoBackgroundResolver()
+          }
+        }
+      }, waitMs)
 
       await new Promise<void>((resolve, reject) => {
+        // Store resolver for auto-background
+        autoBackgroundResolver = resolve
+
         const cleanup = () => {
-          clearTimeout(timeoutTimer)
+          clearTimeout(autoBackgroundTimer)
           ctx.abort.removeEventListener("abort", abortHandler)
+          autoBackgroundResolver = null
         }
 
         proc.once("exit", () => {
@@ -272,34 +423,80 @@ export const BashTool = Tool.define("bash", async () => {
         })
       })
 
-      let resultMetadata: String[] = ["<bash_metadata>"]
+      // If we triggered auto-background but process hasn't exited, move to background
+      if (movedToBackground && !exited) {
+        // Clean up bash.ts listeners BEFORE adopting to prevent duplicate listening
+        proc.stdout?.removeAllListeners("data")
+        proc.stderr?.removeAllListeners("data")
+        proc.removeAllListeners("exit")
+        proc.removeAllListeners("error")
+        ctx.abort.removeEventListener("abort", abortHandler)
 
-      if (output.length > MAX_OUTPUT_LENGTH) {
+        // Background processes run indefinitely until completion or termination
+
+        // Adopt the existing process (DON'T kill it or restart!)
+        const manager = getBackgroundProcessManager()
+        const { pid } = manager.adopt(
+          proc, // The running process
+          params.command, // Command for reference
+          cwd, // Working directory
+          ctx.sessionID, // Session ID
+          startTime, // Original start time (CRITICAL: preserves timing)
+          output, // Accumulated stdout from first 10s
+          "", // Accumulated stderr (empty - we capture both in output)
+          combinedOutput, // Combined output with timestamps
+        )
+
+        // Set up abort handling for background process
+        if (!ctx.abort.aborted) {
+          const bgAbortHandler = () => manager.kill(pid)
+          ctx.abort.addEventListener("abort", bgAbortHandler)
+        }
+
+        const finalOutput = formatOutput(output, { movedToBackground: true, pid })
+
+        // Stream final metadata with background info
+        ctx.metadata({
+          metadata: {
+            output: finalOutput,
+            description: params.description,
+            pid,
+          },
+        })
+
+        return {
+          title: params.description,
+          metadata: {
+            output: finalOutput,
+            description: params.description,
+            pid,
+            exit: null,
+          },
+          output: finalOutput,
+        }
+      }
+
+      // Normal synchronous completion
+      const truncated = output.length > MAX_OUTPUT_LENGTH
+      if (truncated) {
         output = output.slice(0, MAX_OUTPUT_LENGTH)
-        resultMetadata.push(`bash tool truncated output as it exceeded ${MAX_OUTPUT_LENGTH} char limit`)
       }
 
-      if (timedOut) {
-        resultMetadata.push(`bash tool terminated commmand after exceeding timeout ${timeout} ms`)
-      }
-
-      if (aborted) {
-        resultMetadata.push("User aborted the command")
-      }
-
-      if (resultMetadata.length > 1) {
-        resultMetadata.push("</bash_metadata>")
-        output += "\n\n" + resultMetadata.join("\n")
-      }
+      const finalOutput = formatOutput(output, {
+        truncated,
+        aborted,
+        exitCode: proc.exitCode,
+      })
 
       return {
         title: params.description,
         metadata: {
-          output,
-          exit: proc.exitCode,
+          output: finalOutput,
           description: params.description,
+          pid: 0,
+          exit: proc.exitCode,
         },
-        output,
+        output: finalOutput,
       }
     },
   }

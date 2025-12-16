@@ -446,6 +446,31 @@ export type EventMessagePartRemoved = {
   }
 }
 
+export type EventBackgroundProcessStarted = {
+  type: "background.process.started"
+  properties: {
+    pid: number
+    command: string
+    workdir: string
+  }
+}
+
+export type EventBackgroundProcessCompleted = {
+  type: "background.process.completed"
+  properties: {
+    pid: number
+    exitCode: number | null
+    signal: string | null
+  }
+}
+
+export type EventBackgroundProcessKilled = {
+  type: "background.process.killed"
+  properties: {
+    pid: number
+  }
+}
+
 export type Permission = {
   id: string
   type: string
@@ -744,6 +769,9 @@ export type Event =
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartRemoved
+  | EventBackgroundProcessStarted
+  | EventBackgroundProcessCompleted
+  | EventBackgroundProcessKilled
   | EventPermissionUpdated
   | EventPermissionReplied
   | EventFileEdited
@@ -3803,6 +3831,37 @@ export type LspStatusResponses = {
 }
 
 export type LspStatusResponse = LspStatusResponses[keyof LspStatusResponses]
+
+export type ProcessListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/process/list"
+}
+
+export type ProcessListResponses = {
+  /**
+   * Successfully retrieved process list
+   */
+  200: Array<{
+    pid: number
+    command: string
+    workdir: string
+    sessionID: string
+    status: "running" | "completed" | "killed"
+    exitCode: number | null
+    signal: string | null
+    stdout: string
+    stderr: string
+    combined: string
+    startTime: number
+    endTime: number | null
+  }>
+}
+
+export type ProcessListResponse = ProcessListResponses[keyof ProcessListResponses]
 
 export type FormatterStatusData = {
   body?: never

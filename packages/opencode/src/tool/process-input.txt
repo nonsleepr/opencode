@@ -1,0 +1,24 @@
+Sends input (stdin) to interactive background processes started with the bash tool.
+
+Usage:
+- Provide the PID and text to send to the process's stdin
+- Use close_stdin parameter to send EOF after the text
+- Only works with running processes that have stdin available
+
+Features:
+- Supports interactive command input (e.g., prompts, REPLs)
+- Can close stdin to signal end of input (EOF)
+- Validates process exists and is still running
+- Returns clear error messages for common failure cases
+
+Tips:
+- Use for interactive programs that wait for user input
+- Set close_stdin: true when done sending all input
+- Check process_output after sending input to see the response
+- Common interactive tools: python REPL, bash prompts, ssh sessions
+- Will fail if process completed or stdin was already closed
+
+Examples:
+- Send command to interactive shell: text: "ls -la\n"
+- Send input and close: text: "exit\n", close_stdin: true
+- Answer prompt: text: "yes\n"

@@ -32,6 +32,8 @@ import type { Tool } from "@/tool/tool"
 import type { ReadTool } from "@/tool/read"
 import type { WriteTool } from "@/tool/write"
 import { BashTool } from "@/tool/bash"
+import type { ProcessOutputTool } from "@/tool/process-output"
+import type { ProcessInputTool } from "@/tool/process-input"
 import type { GlobTool } from "@/tool/glob"
 import { TodoWriteTool } from "@/tool/todo"
 import type { GrepTool } from "@/tool/grep"
@@ -1387,6 +1389,55 @@ ToolRegistry.register<typeof BashTool>({
           </box>
         </Show>
       </>
+    )
+  },
+})
+
+ToolRegistry.register<typeof ProcessOutputTool>({
+  name: "process_output",
+  container: "block",
+  render(props) {
+    const { theme } = useTheme()
+    const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+
+    return (
+      <>
+        <ToolTitle icon="◉" fallback="Retrieving process output..." when={props.input.pid}>
+          Process {props.input.pid}
+          <Show when={props.metadata.status}>
+            {" "}
+            <span style={{ fg: props.metadata.status === "running" ? theme.warning : theme.text }}>
+              ({props.metadata.status})
+            </span>
+          </Show>
+          <Show when={props.metadata.exitCode !== null && props.metadata.exitCode !== 0}>
+            {" "}
+            <span style={{ fg: theme.error }}>exit {props.metadata.exitCode}</span>
+          </Show>
+        </ToolTitle>
+        <Show when={output()}>
+          <box>
+            <text fg={theme.text}>{output()}</text>
+          </box>
+        </Show>
+      </>
+    )
+  },
+})
+
+ToolRegistry.register<typeof ProcessInputTool>({
+  name: "process_input",
+  container: "inline",
+  render(props) {
+    const { theme } = useTheme()
+    return (
+      <ToolTitle icon="→" fallback="Sending input..." when={props.input.pid}>
+        Sent input to process {props.input.pid}
+        <Show when={props.input.close_stdin}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>(stdin closed)</span>
+        </Show>
+      </ToolTitle>
     )
   },
 })

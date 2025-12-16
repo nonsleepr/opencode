@@ -465,6 +465,13 @@ export namespace SessionPrompt {
         model,
         abort,
       })
+      const system = await resolveSystemPrompt({
+        model,
+        agent,
+        system: lastUser.system,
+        isLastStep,
+        sessionID,
+      })
       const tools = await resolveTools({
         agent,
         sessionID,
@@ -524,6 +531,35 @@ export namespace SessionPrompt {
       if (item.info.role === "user" && item.info.model) return item.info.model
     }
     return Provider.defaultModel()
+  }
+
+  async function resolveSystemPrompt(input: {
+    system?: string
+    agent: Agent.Info
+    model: Provider.Model
+    isLastStep?: boolean
+    sessionID: string
+  }) {
+    let system = SystemPrompt.header(input.model.providerID)
+    system.push(
+      ...(() => {
+        if (input.system) return [input.system]
+        if (input.agent.prompt) return [input.agent.prompt]
+        return SystemPrompt.provider(input.model)
+      })(),
+    )
+    system.push(...(await SystemPrompt.environment()))
+    system.push(...(await SystemPrompt.backgroundProcesses(input.sessionID)))
+    system.push(...(await SystemPrompt.custom()))
+
+    if (input.isLastStep) {
+      system.push(MAX_STEPS)
+    }
+
+    // max 2 system prompt messages for caching purposes
+    const [first, ...rest] = system
+    system = [first, rest.join("\n")]
+    return system
   }
 
   async function resolveTools(input: {

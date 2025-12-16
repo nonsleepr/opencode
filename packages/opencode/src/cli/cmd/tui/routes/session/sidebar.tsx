@@ -1,5 +1,5 @@
 import { useSync } from "@tui/context/sync"
-import { createMemo, For, Show, Switch, Match } from "solid-js"
+import { createMemo, For, Show, Switch, Match, createSignal, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useTheme } from "../../context/theme"
 import { Locale } from "@/util/locale"
@@ -19,11 +19,17 @@ export function Sidebar(props: { sessionID: string }) {
   const todo = createMemo(() => sync.data.todo[props.sessionID] ?? [])
   const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
 
+  // Reactive tick signal for updating timers every second
+  const [tick, setTick] = createSignal(0)
+  const tickInterval = setInterval(() => setTick((prev) => prev + 1), 1000)
+  onCleanup(() => clearInterval(tickInterval))
+
   const [expanded, setExpanded] = createStore({
     mcp: true,
     diff: true,
     todo: true,
     lsp: true,
+    processes: true,
   })
 
   // Sort MCP servers alphabetically for consistent display order
@@ -49,6 +55,7 @@ export function Sidebar(props: { sessionID: string }) {
     }
   })
 
+  const keybind = useKeybind()
   const directory = useDirectory()
   const kv = useKV()
 
@@ -240,6 +247,76 @@ export function Sidebar(props: { sessionID: string }) {
                               <text fg={theme.diffRemoved}>-{item.deletions}</text>
                             </Show>
                           </box>
+                        </box>
+                      )
+                    }}
+                  </For>
+                </Show>
+              </box>
+            </Show>
+
+            {/* Background Processes Section */}
+            <Show when={sync.data.processes.filter((p) => p.status === "running").length > 0}>
+              <box>
+                <box
+                  flexDirection="row"
+                  gap={1}
+                  onMouseDown={() => {
+                    const runningProcs = sync.data.processes.filter((p) => p.status === "running")
+                    if (runningProcs.length > 2) {
+                      setExpanded("processes", !expanded.processes)
+                    }
+                  }}
+                >
+                  <Show when={sync.data.processes.filter((p) => p.status === "running").length > 2}>
+                    <text fg={theme.text}>{expanded.processes ? "▼" : "▶"}</text>
+                  </Show>
+                  <text fg={theme.text}>
+                    <b>Background Processes</b>
+                  </text>
+                </box>
+                <Show
+                  when={sync.data.processes.filter((p) => p.status === "running").length <= 2 || expanded.processes}
+                >
+                  <For each={sync.data.processes.filter((p) => p.status === "running")}>
+                    {(process) => {
+                      const runtime = createMemo(() => {
+                        tick() // Subscribe to tick signal for reactivity
+                        const elapsed = Date.now() - process.startTime
+                        const seconds = Math.floor(elapsed / 1000)
+
+                        if (seconds < 60) return `${seconds}s`
+
+                        const minutes = Math.floor(seconds / 60)
+                        if (minutes < 60) return `${minutes}m`
+
+                        const hours = Math.floor(minutes / 60)
+                        const remainingMinutes = minutes % 60
+                        return `${hours}h ${remainingMinutes}m`
+                      })
+
+                      const displayCmd = createMemo(() => {
+                        const maxLen = 28
+                        if (process.command.length <= maxLen) return process.command
+                        return process.command.substring(0, maxLen - 3) + "..."
+                      })
+
+                      return (
+                        <box flexDirection="row" gap={1} justifyContent="space-between">
+                          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
+                            <text fg={theme.success} flexShrink={0}>
+                              ◉
+                            </text>
+                            <text fg={theme.text} flexShrink={0}>
+                              {process.pid}
+                            </text>
+                            <text fg={theme.textMuted} wrapMode="char">
+                              {displayCmd()}
+                            </text>
+                          </box>
+                          <text fg={theme.textMuted} flexShrink={0}>
+                            {runtime()}
+                          </text>
                         </box>
                       )
                     }}

@@ -1,0 +1,92 @@
+---
+title: Background commands
+description: Run servers and long tasks without blocking
+---
+
+OpenCode can run long-running commands in the background without blocking your workflow. This lets you start development servers, run builds, or execute tests while continuing to work on other tasks.
+
+The agent automatically manages these background processes and can check their status or retrieve their output at any time. Background processes run indefinitely without timeout.
+
+---
+
+## How it works
+
+Commands that take longer than 5 seconds automatically move to the background. You can also explicitly request immediate backgrounding or specify a custom wait time.
+
+Background processes continue running while you chat with the agent or work on other tasks. The agent can check on them, retrieve their output, send input to interactive programs, or terminate them when needed.
+
+---
+
+## Common use cases
+
+Run development servers, execute test suites, or build projects in the background while continuing other work. OpenCode automatically manages these processes and can check their status or output at any time.
+
+```
+"Start the dev server in the background and then update the API routes"
+```
+
+```
+"Run the test suite in the background and show me the results when done"
+```
+
+---
+
+## Controlling background behavior
+
+You can control when commands move to background using the `wait` parameter:
+
+- **Default (5 seconds)**: Commands automatically background after 5 seconds
+- **Immediate (`wait=0`)**: Command backgrounds instantly after a 1-second fast-failure check
+- **Custom wait (`wait=30`)**: Wait up to 30 seconds before backgrounding (max: 600 seconds)
+
+Examples:
+
+```
+"Start npm run dev with wait=0 so it backgrounds immediately"
+```
+
+```
+"Run sleep 60 with wait=60 to wait for the full duration"
+```
+
+---
+
+## Architecture
+
+OpenCode uses several tools to manage background processes.
+
+---
+
+### Process management
+
+When a command runs in the background, OpenCode receives a process ID (PID) that identifies it. The agent uses this PID to track and interact with the process throughout its lifecycle.
+
+Background processes have three main tools available:
+
+- **bash tool** - Runs commands, with optional `wait` parameter to control backgrounding
+- **process_output tool** - Retrieves current output and status of a background process
+- **process_input tool** - Sends input to interactive background processes
+
+---
+
+### Output handling
+
+The agent can retrieve output from background processes at any time. Output includes both stdout and stderr, interleaved in chronological order by default for accurate debugging.
+
+For processes with heavy output, the agent can filter to show only stdout or only stderr. This helps isolate specific information like build logs or error messages.
+
+---
+
+### Process lifecycle
+
+Background processes run indefinitely without timeout until they complete naturally or are terminated. The agent can retrieve output from finished processes, making it easy to check results later.
+
+When you close OpenCode or end your session, all background processes are automatically terminated and cleaned up.
+
+---
+
+## System limits
+
+OpenCode maintains some limits on background processes to ensure system stability.
+
+A maximum of 50 background processes can run simultaneously. Output is limited to 30KB per stream (stdout/stderr) or 60KB combined, with truncation showing the most recent content when limits are exceeded.

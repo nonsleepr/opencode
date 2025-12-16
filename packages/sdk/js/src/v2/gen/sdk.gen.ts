@@ -50,6 +50,7 @@ import type {
   PathGetResponses,
   PermissionRespondErrors,
   PermissionRespondResponses,
+  ProcessListResponses,
   ProjectCurrentResponses,
   ProjectListResponses,
   ProjectUpdateErrors,
@@ -2220,6 +2221,27 @@ export class Lsp extends HeyApiClient {
   }
 }
 
+export class Process extends HeyApiClient {
+  /**
+   * List background processes
+   *
+   * Get list of all background processes (running, completed, and killed) for the current OpenCode instance. Processes are identified by shell ID.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
+    return (options?.client ?? this.client).get<ProcessListResponses, unknown, ThrowOnError>({
+      url: "/process/list",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Formatter extends HeyApiClient {
   /**
    * Get formatter status
@@ -2603,6 +2625,8 @@ export class OpencodeClient extends HeyApiClient {
   mcp = new Mcp({ client: this.client })
 
   lsp = new Lsp({ client: this.client })
+
+  process = new Process({ client: this.client })
 
   formatter = new Formatter({ client: this.client })
 

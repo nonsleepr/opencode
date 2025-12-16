@@ -1,0 +1,2575 @@
+diff --git a/packages/opencode/src/cli/cmd/tui/context/sync.tsx b/packages/opencode/src/cli/cmd/tui/context/sync.tsx
+index 28ea60a67..b4eb24656 100644
+--- a/packages/opencode/src/cli/cmd/tui/context/sync.tsx
++++ b/packages/opencode/src/cli/cmd/tui/context/sync.tsx
+@@ -21,6 +21,7 @@ import { useSDK } from "@tui/context/sdk"
+ import { Binary } from "@opencode-ai/util/binary"
+ import { createSimpleContext } from "./helper"
+ import type { Snapshot } from "@/snapshot"
++import type { ProcessInfo } from "@/shell/background"
+ import { useExit } from "./exit"
+ import { batch, onMount } from "solid-js"
+ import { Log } from "@/util/log"
+@@ -62,6 +63,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
+       }
+       formatter: FormatterStatus[]
+       vcs: VcsInfo | undefined
++      processes: ProcessInfo[]
+     }>({
+       provider_next: {
+         all: [],
+@@ -86,6 +88,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
+       mcp: {},
+       formatter: [],
+       vcs: undefined,
++      processes: [],
+     })
+ 
+     const sdk = useSDK()
+@@ -243,6 +246,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
+           break
+         }
+ 
++        case "background.process.started":
++        case "background.process.completed":
++        case "background.process.killed": {
++          sdk.client.process
++            .list()
++            .then((x) => {
++              if (x.data) {
++                setStore("processes", x.data)
++              }
++            })
++            .catch((err) => {
++              console.warn("Failed to refresh process list:", err)
++            })
++          break
++        }
++
+         case "vcs.branch.updated": {
+           setStore("vcs", { branch: event.properties.branch })
+           break
+@@ -286,6 +305,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
+             sdk.client.session.status().then((x) => setStore("session_status", x.data!)),
+             sdk.client.provider.auth().then((x) => setStore("provider_auth", x.data ?? {})),
+             sdk.client.vcs.get().then((x) => setStore("vcs", x.data)),
++            sdk.client.process.list().then((x) => setStore("processes", x.data ?? [])),
+           ]).then(() => {
+             setStore("status", "complete")
+           })
+diff --git a/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx b/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx
+index 628235afd..c2fbbf5e0 100644
+--- a/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx
++++ b/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx
+@@ -32,6 +32,8 @@ import type { Tool } from "@/tool/tool"
+ import type { ReadTool } from "@/tool/read"
+ import type { WriteTool } from "@/tool/write"
+ import { BashTool } from "@/tool/bash"
++import type { ProcessOutputTool } from "@/tool/process-output"
++import type { ProcessInputTool } from "@/tool/process-input"
+ import type { GlobTool } from "@/tool/glob"
+ import { TodoWriteTool } from "@/tool/todo"
+ import type { GrepTool } from "@/tool/grep"
+@@ -1386,6 +1388,55 @@ ToolRegistry.register<typeof BashTool>({
+   },
+ })
+ 
++ToolRegistry.register<typeof ProcessOutputTool>({
++  name: "process_output",
++  container: "block",
++  render(props) {
++    const { theme } = useTheme()
++    const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
++
++    return (
++      <>
++        <ToolTitle icon="◉" fallback="Retrieving process output..." when={props.input.pid}>
++          Process {props.input.pid}
++          <Show when={props.metadata.status}>
++            {" "}
++            <span style={{ fg: props.metadata.status === "running" ? theme.warning : theme.text }}>
++              ({props.metadata.status})
++            </span>
++          </Show>
++          <Show when={props.metadata.exitCode !== null && props.metadata.exitCode !== 0}>
++            {" "}
++            <span style={{ fg: theme.error }}>exit {props.metadata.exitCode}</span>
++          </Show>
++        </ToolTitle>
++        <Show when={output()}>
++          <box>
++            <text fg={theme.text}>{output()}</text>
++          </box>
++        </Show>
++      </>
++    )
++  },
++})
++
++ToolRegistry.register<typeof ProcessInputTool>({
++  name: "process_input",
++  container: "inline",
++  render(props) {
++    const { theme } = useTheme()
++    return (
++      <ToolTitle icon="→" fallback="Sending input..." when={props.input.pid}>
++        Sent input to process {props.input.pid}
++        <Show when={props.input.close_stdin}>
++          {" "}
++          <span style={{ fg: theme.textMuted }}>(stdin closed)</span>
++        </Show>
++      </ToolTitle>
++    )
++  },
++})
++
+ ToolRegistry.register<typeof ReadTool>({
+   name: "read",
+   container: "inline",
+diff --git a/packages/opencode/src/cli/cmd/tui/routes/session/sidebar.tsx b/packages/opencode/src/cli/cmd/tui/routes/session/sidebar.tsx
+index 508d10838..9e9a03bde 100644
+--- a/packages/opencode/src/cli/cmd/tui/routes/session/sidebar.tsx
++++ b/packages/opencode/src/cli/cmd/tui/routes/session/sidebar.tsx
+@@ -1,5 +1,5 @@
+ import { useSync } from "@tui/context/sync"
+-import { createMemo, For, Show, Switch, Match } from "solid-js"
++import { createMemo, For, Show, Switch, Match, createSignal, onCleanup } from "solid-js"
+ import { createStore } from "solid-js/store"
+ import { useTheme } from "../../context/theme"
+ import { Locale } from "@/util/locale"
+@@ -18,13 +18,21 @@ export function Sidebar(props: { sessionID: string }) {
+   const todo = createMemo(() => sync.data.todo[props.sessionID] ?? [])
+   const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
+ 
++  // Reactive tick signal for updating timers every second
++  const [tick, setTick] = createSignal(0)
++  const tickInterval = setInterval(() => setTick((prev) => prev + 1), 1000)
++  onCleanup(() => clearInterval(tickInterval))
++
+   const [expanded, setExpanded] = createStore({
+     mcp: true,
+     diff: true,
+     todo: true,
+     lsp: true,
++    processes: true,
+   })
+ 
++  const directory = useDirectory()
++
+   // Sort MCP servers alphabetically for consistent display order
+   const mcpEntries = createMemo(() => Object.entries(sync.data.mcp).sort(([a], [b]) => a.localeCompare(b)))
+ 
+@@ -49,7 +57,6 @@ export function Sidebar(props: { sessionID: string }) {
+   })
+ 
+   const keybind = useKeybind()
+-  const directory = useDirectory()
+ 
+   const hasProviders = createMemo(() =>
+     sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
+@@ -245,6 +252,76 @@ export function Sidebar(props: { sessionID: string }) {
+                 </Show>
+               </box>
+             </Show>
++
++            {/* Background Processes Section */}
++            <Show when={sync.data.processes.filter((p) => p.status === "running").length > 0}>
++              <box>
++                <box
++                  flexDirection="row"
++                  gap={1}
++                  onMouseDown={() => {
++                    const runningProcs = sync.data.processes.filter((p) => p.status === "running")
++                    if (runningProcs.length > 2) {
++                      setExpanded("processes", !expanded.processes)
++                    }
++                  }}
++                >
++                  <Show when={sync.data.processes.filter((p) => p.status === "running").length > 2}>
++                    <text fg={theme.text}>{expanded.processes ? "▼" : "▶"}</text>
++                  </Show>
++                  <text fg={theme.text}>
++                    <b>Background Processes</b>
++                  </text>
++                </box>
++                <Show
++                  when={sync.data.processes.filter((p) => p.status === "running").length <= 2 || expanded.processes}
++                >
++                  <For each={sync.data.processes.filter((p) => p.status === "running")}>
++                    {(process) => {
++                      const runtime = createMemo(() => {
++                        tick() // Subscribe to tick signal for reactivity
++                        const elapsed = Date.now() - process.startTime
++                        const seconds = Math.floor(elapsed / 1000)
++
++                        if (seconds < 60) return `${seconds}s`
++
++                        const minutes = Math.floor(seconds / 60)
++                        if (minutes < 60) return `${minutes}m`
++
++                        const hours = Math.floor(minutes / 60)
++                        const remainingMinutes = minutes % 60
++                        return `${hours}h ${remainingMinutes}m`
++                      })
++
++                      const displayCmd = createMemo(() => {
++                        const maxLen = 28
++                        if (process.command.length <= maxLen) return process.command
++                        return process.command.substring(0, maxLen - 3) + "..."
++                      })
++
++                      return (
++                        <box flexDirection="row" gap={1} justifyContent="space-between">
++                          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
++                            <text fg={theme.success} flexShrink={0}>
++                              ◉
++                            </text>
++                            <text fg={theme.text} flexShrink={0}>
++                              {process.pid}
++                            </text>
++                            <text fg={theme.textMuted} wrapMode="char">
++                              {displayCmd()}
++                            </text>
++                          </box>
++                          <text fg={theme.textMuted} flexShrink={0}>
++                            {runtime()}
++                          </text>
++                        </box>
++                      )
++                    }}
++                  </For>
++                </Show>
++              </box>
++            </Show>
+           </box>
+         </scrollbox>
+ 
+diff --git a/packages/opencode/src/process/index.ts b/packages/opencode/src/process/index.ts
+new file mode 100644
+index 000000000..49075d76b
+--- /dev/null
++++ b/packages/opencode/src/process/index.ts
+@@ -0,0 +1,23 @@
++import { getBackgroundProcessManager } from "@/shell/background"
++import { fn } from "@/util/fn"
++import z from "zod"
++
++/**
++ * Process namespace containing all process-related operations.
++ * Provides access to background process management functionality.
++ */
++export namespace Process {
++  /**
++   * List all background processes (running, completed, and killed).
++   *
++   * @returns Array of ProcessInfo objects containing process metadata
++   *
++   * @example
++   * const processes = await Process.list()
++   * const running = processes.filter(p => p.status === "running")
++   */
++  export const list = fn(z.void(), async () => {
++    const manager = getBackgroundProcessManager()
++    return manager.list()
++  })
++}
+diff --git a/packages/opencode/src/server/server.ts b/packages/opencode/src/server/server.ts
+index e1e3367c6..042789fe7 100644
+--- a/packages/opencode/src/server/server.ts
++++ b/packages/opencode/src/server/server.ts
+@@ -47,6 +47,8 @@ import { SessionStatus } from "@/session/status"
+ import { upgradeWebSocket, websocket } from "hono/bun"
+ import { errors } from "./error"
+ import { Pty } from "@/pty"
++import { Process } from "@/process"
++import { ProcessInfoSchema } from "@/shell/background"
+ 
+ // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
+ globalThis.AI_SDK_LOG_WARNINGS = false
+@@ -2061,6 +2063,30 @@ export namespace Server {
+           return c.json(await LSP.status())
+         },
+       )
++      .get(
++        "/process/list",
++        describeRoute({
++          summary: "List background processes",
++          description:
++            "Get list of all background processes (running, completed, and killed) " +
++            "for the current OpenCode instance. Processes are identified by shell ID.",
++          operationId: "process.list",
++          tags: ["Processes"],
++          responses: {
++            200: {
++              description: "Successfully retrieved process list",
++              content: {
++                "application/json": {
++                  schema: resolver(z.array(ProcessInfoSchema)),
++                },
++              },
++            },
++          },
++        }),
++        async (c) => {
++          return c.json(await Process.list())
++        },
++      )
+       .get(
+         "/formatter",
+         describeRoute({
+diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
+index 15e934962..2d7ee456b 100644
+--- a/packages/opencode/src/session/prompt.ts
++++ b/packages/opencode/src/session/prompt.ts
+@@ -476,6 +476,7 @@ export namespace SessionPrompt {
+         agent,
+         system: lastUser.system,
+         isLastStep,
++        sessionID,
+       })
+       const tools = await resolveTools({
+         agent,
+@@ -664,6 +665,7 @@ export namespace SessionPrompt {
+     agent: Agent.Info
+     model: Provider.Model
+     isLastStep?: boolean
++    sessionID: string
+   }) {
+     let system = SystemPrompt.header(input.model.providerID)
+     system.push(
+@@ -674,6 +676,7 @@ export namespace SessionPrompt {
+       })(),
+     )
+     system.push(...(await SystemPrompt.environment()))
++    system.push(...(await SystemPrompt.backgroundProcesses(input.sessionID)))
+     system.push(...(await SystemPrompt.custom()))
+ 
+     if (input.isLastStep) {
+diff --git a/packages/opencode/src/session/system.ts b/packages/opencode/src/session/system.ts
+index 3146110cf..199e98718 100644
+--- a/packages/opencode/src/session/system.ts
++++ b/packages/opencode/src/session/system.ts
+@@ -4,6 +4,7 @@ import { Filesystem } from "../util/filesystem"
+ import { Config } from "../config/config"
+ 
+ import { Instance } from "../project/instance"
++import { getBackgroundProcessManager } from "../shell/background"
+ import path from "path"
+ import os from "os"
+ 
+@@ -60,6 +61,69 @@ export namespace SystemPrompt {
+     ]
+   }
+ 
++  export async function backgroundProcesses(sessionID: string) {
++    const manager = getBackgroundProcessManager()
++    const processes = manager.listProcessesBySession(sessionID)
++
++    const now = Date.now()
++    const fiveMinutesAgo = now - 5 * 60 * 1000
++
++    // Filter to running processes + completed/killed processes from last 5 minutes
++    const relevantProcesses = processes.filter((process) => {
++      if (process.status === "running") return true
++      if (process.endTime && process.endTime >= fiveMinutesAgo) return true
++      return false
++    })
++
++    if (relevantProcesses.length === 0) {
++      return []
++    }
++
++    const formatDuration = (startTime: number, endTime: number | null) => {
++      const duration = (endTime ?? now) - startTime
++      const seconds = Math.floor(duration / 1000)
++      if (seconds < 60) return `${seconds}s`
++      const minutes = Math.floor(seconds / 60)
++      const remainingSeconds = seconds % 60
++      if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
++      const hours = Math.floor(minutes / 60)
++      const remainingMinutes = minutes % 60
++      return `${hours}h ${remainingMinutes}m`
++    }
++
++    const formatSize = (bytes: number) => {
++      if (bytes < 1024) return `${bytes}B`
++      const kb = bytes / 1024
++      if (kb < 1024) return `${kb.toFixed(1)}KB`
++      const mb = kb / 1024
++      return `${mb.toFixed(1)}MB`
++    }
++
++    const processLines = relevantProcesses.map((process) => {
++      const info = process.getInfo()
++      const statusAttr =
++        info.status === "running"
++          ? `status="running"`
++          : info.status === "completed"
++            ? `status="completed" exit_code="${info.exitCode}"`
++            : `status="killed"`
++
++      const outputSize = info.combined.length
++      const startDate = new Date(info.startTime).toISOString()
++
++      return [
++        `  <process pid="${info.pid}" ${statusAttr} started="${startDate}">`,
++        `    command: ${info.command}`,
++        `    workdir: ${info.workdir}`,
++        `    runtime: ${formatDuration(info.startTime, info.endTime)}`,
++        `    output_size: ${formatSize(outputSize)}`,
++        `  </process>`,
++      ].join("\n")
++    })
++
++    return [["<background_processes>", ...processLines, "</background_processes>"].join("\n")]
++  }
++
+   const LOCAL_RULE_FILES = [
+     "AGENTS.md",
+     "CLAUDE.md",
+diff --git a/packages/opencode/src/shell/background.ts b/packages/opencode/src/shell/background.ts
+new file mode 100644
+index 000000000..56276fcf5
+--- /dev/null
++++ b/packages/opencode/src/shell/background.ts
+@@ -0,0 +1,471 @@
++import { spawn, ChildProcess } from "child_process"
++import { Instance } from "@/project/instance"
++import { Log } from "@/util/log"
++import { Bus } from "@/bus"
++import { BusEvent } from "@/bus/bus-event"
++import z from "zod"
++
++const log = Log.create({ service: "background-processes" })
++
++// Constants
++const MAX_BACKGROUND_PROCESSES = 50
++const MAX_OUTPUT_PER_STREAM = 30_000
++
++// Bus event definitions
++export const BackgroundProcessStarted = BusEvent.define(
++  "background.process.started",
++  z.object({
++    pid: z.number(),
++    command: z.string(),
++    workdir: z.string(),
++  }),
++)
++
++export const BackgroundProcessCompleted = BusEvent.define(
++  "background.process.completed",
++  z.object({
++    pid: z.number(),
++    exitCode: z.number().nullable(),
++    signal: z.string().nullable(),
++  }),
++)
++
++export const BackgroundProcessKilled = BusEvent.define(
++  "background.process.killed",
++  z.object({
++    pid: z.number(),
++  }),
++)
++
++export type ProcessStatus = "running" | "completed" | "killed"
++
++export const ProcessInfoSchema = z.object({
++  pid: z.number(),
++  command: z.string(),
++  workdir: z.string(),
++  sessionID: z.string(),
++  status: z.enum(["running", "completed", "killed"]),
++  exitCode: z.number().nullable(),
++  signal: z.string().nullable(),
++  stdout: z.string(),
++  stderr: z.string(),
++  combined: z.string(),
++  startTime: z.number(),
++  endTime: z.number().nullable(),
++})
++
++export interface ProcessInfo {
++  pid: number
++  command: string
++  workdir: string
++  sessionID: string
++  status: ProcessStatus
++  exitCode: number | null
++  signal: string | null
++  stdout: string
++  stderr: string
++  combined: string
++  startTime: number
++  endTime: number | null
++}
++
++class BackgroundProcess {
++  public readonly sessionID: string
++  command: string
++  workdir: string
++  process: ChildProcess
++  status: ProcessStatus = "running"
++  exitCode: number | null = null
++  signal: string | null = null
++  stdout: string = ""
++  stderr: string = ""
++  stdoutTruncated: boolean = false
++  stderrTruncated: boolean = false
++  startTime: number
++  endTime: number | null = null
++  exitError: Error | null = null
++  private combinedOutput: Array<{
++    timestamp: number
++    stream: "stdout" | "stderr"
++    text: string
++  }> = []
++  private combinedTruncated: boolean = false
++
++  constructor(
++    command: string,
++    workdir: string,
++    sessionID: string,
++    process: ChildProcess,
++    options?: {
++      startTime?: number
++      initialStdout?: string
++      initialStderr?: string
++      initialCombinedOutput?: Array<{
++        timestamp: number
++        stream: "stdout" | "stderr"
++        text: string
++      }>
++    },
++  ) {
++    this.command = command
++    this.workdir = workdir
++    this.sessionID = sessionID
++    this.process = process
++    this.startTime = options?.startTime || Date.now()
++
++    // Initialize with accumulated output BEFORE setting up handlers
++    this.stdout = options?.initialStdout || ""
++    this.stderr = options?.initialStderr || ""
++    this.combinedOutput = options?.initialCombinedOutput || []
++
++    // Setup output buffering with rolling window
++    process.stdout?.on("data", (chunk: Buffer) => {
++      const text = chunk.toString()
++      // Always append new output
++      this.stdout += text
++
++      // If exceeds limit, trim from the beginning (rolling window)
++      if (this.stdout.length > MAX_OUTPUT_PER_STREAM) {
++        const excess = this.stdout.length - MAX_OUTPUT_PER_STREAM
++        this.stdout = this.stdout.slice(excess)
++        this.stdoutTruncated = true
++      }
++
++      // Also store in combined buffer with timestamp
++      this.combinedOutput.push({
++        timestamp: Date.now(),
++        stream: "stdout",
++        text: text,
++      })
++
++      // Truncate combined buffer if exceeds limit (60k total for both streams)
++      const totalSize = this.combinedOutput.reduce((sum, entry) => sum + entry.text.length, 0)
++      if (totalSize > MAX_OUTPUT_PER_STREAM * 2) {
++        // Keep removing oldest entries until under limit
++        while (
++          this.combinedOutput.length > 0 &&
++          this.combinedOutput.reduce((sum, e) => sum + e.text.length, 0) > MAX_OUTPUT_PER_STREAM * 2
++        ) {
++          this.combinedOutput.shift()
++          this.combinedTruncated = true
++        }
++      }
++    })
++
++    process.stderr?.on("data", (chunk: Buffer) => {
++      const text = chunk.toString()
++      // Always append new output
++      this.stderr += text
++
++      // If exceeds limit, trim from the beginning (rolling window)
++      if (this.stderr.length > MAX_OUTPUT_PER_STREAM) {
++        const excess = this.stderr.length - MAX_OUTPUT_PER_STREAM
++        this.stderr = this.stderr.slice(excess)
++        this.stderrTruncated = true
++      }
++
++      // Also store in combined buffer with timestamp
++      this.combinedOutput.push({
++        timestamp: Date.now(),
++        stream: "stderr",
++        text: text,
++      })
++
++      // Truncate combined buffer if exceeds limit (60k total for both streams)
++      const totalSize = this.combinedOutput.reduce((sum, entry) => sum + entry.text.length, 0)
++      if (totalSize > MAX_OUTPUT_PER_STREAM * 2) {
++        // Keep removing oldest entries until under limit
++        while (
++          this.combinedOutput.length > 0 &&
++          this.combinedOutput.reduce((sum, e) => sum + e.text.length, 0) > MAX_OUTPUT_PER_STREAM * 2
++        ) {
++          this.combinedOutput.shift()
++          this.combinedTruncated = true
++        }
++      }
++    })
++
++    // Handle process exit
++    process.on("exit", (code, signal) => {
++      this.exitCode = code
++      this.signal = signal
++      // If we're killing, status was already set to "killed", don't override
++      if (this.status !== "killed") {
++        this.status = "completed"
++      }
++      this.endTime = Date.now()
++      log.info("background process completed", {
++        pid: this.process.pid,
++        exitCode: code,
++        signal,
++      })
++      Bus.publish(BackgroundProcessCompleted, {
++        pid: this.process.pid!,
++        exitCode: code,
++        signal: signal || null,
++      })
++    })
++
++    // Handle spawn errors
++    process.on("error", (err) => {
++      this.exitError = err
++      log.error("background process spawn error", {
++        pid: this.process.pid,
++        error: err,
++      })
++    })
++  }
++
++  getInfo(): ProcessInfo {
++    return {
++      pid: this.process.pid!,
++      command: this.command,
++      workdir: this.workdir,
++      sessionID: this.sessionID,
++      status: this.status,
++      exitCode: this.exitCode,
++      signal: this.signal,
++      stdout: this.stdout + (this.stdoutTruncated ? "\n[Output truncated to 30KB - showing most recent output]" : ""),
++      stderr: this.stderr + (this.stderrTruncated ? "\n[Output truncated to 30KB - showing most recent output]" : ""),
++      combined: this.getCombinedOutput(),
++      startTime: this.startTime,
++      endTime: this.endTime,
++    }
++  }
++
++  private getCombinedOutput(): string {
++    if (this.combinedOutput.length === 0) {
++      return ""
++    }
++
++    // Sort by timestamp to ensure chronological order
++    // (handles any buffering differences between stdout/stderr)
++    const sorted = [...this.combinedOutput].sort((a, b) => a.timestamp - b.timestamp)
++    const output = sorted.map((entry) => entry.text).join("")
++
++    if (this.combinedTruncated) {
++      return output + "\n[Combined output truncated at 60k characters]"
++    }
++
++    return output
++  }
++
++  sendInput(text: string): boolean {
++    if (this.status !== "running") {
++      log.warn("attempted to send input to non-running process", { pid: this.process.pid })
++      return false
++    }
++    if (!this.process.stdin || this.process.stdin.destroyed) {
++      log.warn("stdin unavailable for process", { pid: this.process.pid })
++      return false
++    }
++    try {
++      return this.process.stdin.write(text)
++    } catch (err) {
++      log.error("failed to write to stdin", { pid: this.process.pid, error: err })
++      return false
++    }
++  }
++
++  kill(): void {
++    if (this.status !== "running") {
++      log.info("kill called on non-running process, ignoring", { pid: this.process.pid })
++      return
++    }
++
++    this.status = "killed"
++    log.info("killing background process", { pid: this.process.pid })
++
++    // Cross-platform process tree killing
++    const pid = this.process.pid
++    if (!pid) {
++      log.warn("no pid for process, cannot kill", { pid: this.process.pid })
++      return
++    }
++
++    try {
++      if (process.platform === "win32") {
++        // Windows: use taskkill with /T flag to kill process tree
++        spawn("taskkill", ["/pid", pid.toString(), "/T", "/F"], {
++          stdio: "ignore",
++        })
++      } else {
++        // Unix: kill process group (negative pid)
++        process.kill(-pid, "SIGKILL")
++      }
++    } catch (err) {
++      log.error("failed to kill process", { pid: this.process.pid, error: err })
++    }
++
++    Bus.publish(BackgroundProcessKilled, {
++      pid: this.process.pid!,
++    })
++  }
++
++  wait(): Promise<void> {
++    return new Promise((resolve) => {
++      if (this.status !== "running") {
++        resolve()
++        return
++      }
++      this.process.once("exit", () => resolve())
++    })
++  }
++}
++
++class BackgroundProcessManager {
++  private processes = new Map<number, BackgroundProcess>()
++
++  start(
++    command: string,
++    workdir: string,
++    sessionID: string,
++    shell: string | boolean,
++  ): { pid: number; process: BackgroundProcess } {
++    // Check max processes limit
++    const runningCount = Array.from(this.processes.values()).filter((p) => p.status === "running").length
++    if (runningCount >= MAX_BACKGROUND_PROCESSES) {
++      throw new Error(`Maximum background processes limit (${MAX_BACKGROUND_PROCESSES}) reached`)
++    }
++
++    log.info("starting background process", { command, workdir })
++
++    // Spawn process with same logic as bash tool
++    const shellCmd = typeof shell === "string" ? shell : command
++    const shellArgs = typeof shell === "string" ? ["-c", command] : []
++    const proc = spawn(shellCmd, shellArgs, {
++      cwd: workdir,
++      stdio: ["pipe", "pipe", "pipe"], // Enable stdin for interactive input
++      detached: process.platform !== "win32", // Create process group on Unix
++      env: {
++        ...process.env,
++        FORCE_COLOR: "1",
++      },
++    })
++
++    const bgProcess = new BackgroundProcess(command, workdir, sessionID, proc)
++    this.processes.set(proc.pid!, bgProcess)
++
++    Bus.publish(BackgroundProcessStarted, {
++      pid: proc.pid!,
++      command,
++      workdir,
++    })
++
++    return { pid: proc.pid!, process: bgProcess }
++  }
++
++  /**
++   * Adopt an existing running process into background management.
++   * Used by auto-background to transfer processes without restarting.
++   */
++  adopt(
++    process: ChildProcess,
++    command: string,
++    workdir: string,
++    sessionID: string,
++    startTime: number,
++    accumulatedStdout: string = "",
++    accumulatedStderr: string = "",
++    accumulatedCombinedOutput: Array<{
++      timestamp: number
++      stream: "stdout" | "stderr"
++      text: string
++    }> = [],
++  ): { pid: number; process: BackgroundProcess } {
++    const runningCount = Array.from(this.processes.values()).filter((p) => p.status === "running").length
++
++    if (runningCount >= MAX_BACKGROUND_PROCESSES) {
++      throw new Error(`Maximum background processes limit (${MAX_BACKGROUND_PROCESSES}) reached`)
++    }
++
++    log.info("adopting existing process", {
++      command,
++      workdir,
++      pid: process.pid,
++      startTime,
++      accumulatedOutputLength: accumulatedStdout.length + accumulatedStderr.length,
++    })
++
++    const bgProcess = new BackgroundProcess(command, workdir, sessionID, process, {
++      startTime,
++      initialStdout: accumulatedStdout,
++      initialStderr: accumulatedStderr,
++      initialCombinedOutput: accumulatedCombinedOutput,
++    })
++
++    this.processes.set(process.pid!, bgProcess)
++
++    Bus.publish(BackgroundProcessStarted, { pid: process.pid!, command, workdir })
++
++    // Auto-cleanup on completion
++    bgProcess.wait().then(() => {
++      Bus.publish(BackgroundProcessCompleted, {
++        pid: bgProcess.process.pid!,
++        exitCode: bgProcess.exitCode,
++        signal: bgProcess.signal,
++      })
++    })
++
++    return { pid: process.pid!, process: bgProcess }
++  }
++
++  get(pid: number): BackgroundProcess | undefined {
++    return this.processes.get(pid)
++  }
++
++  list(): ProcessInfo[] {
++    return Array.from(this.processes.values()).map((process) => process.getInfo())
++  }
++
++  listProcessesBySession(sessionID: string): BackgroundProcess[] {
++    return Array.from(this.processes.values()).filter((process) => process.sessionID === sessionID)
++  }
++
++  kill(pid: number): void {
++    const process = this.processes.get(pid)
++    if (!process) {
++      log.warn("attempted to kill non-existent process", { pid })
++      return
++    }
++    process.kill()
++  }
++
++  sendInput(pid: number, text: string): void {
++    const process = this.processes.get(pid)
++    if (!process) {
++      log.warn("attempted to send input to non-existent process", { pid })
++      return
++    }
++    process.sendInput(text)
++  }
++
++  killAll(): void {
++    log.info("killing all background processes")
++    for (const process of this.processes.values()) {
++      if (process.status === "running") {
++        process.kill()
++      }
++    }
++  }
++
++  dispose(): void {
++    log.info("disposing background process manager")
++    this.killAll()
++    this.processes.clear()
++  }
++}
++
++// Singleton per instance - state function created once at module level
++const state = Instance.state(
++  () => {
++    return new BackgroundProcessManager()
++  },
++  async (manager) => {
++    manager.dispose()
++  },
++)
++
++export function getBackgroundProcessManager() {
++  return state()
++}
+diff --git a/packages/opencode/src/tool/bash.ts b/packages/opencode/src/tool/bash.ts
+index 6b0b9d410..5034ecc88 100644
+--- a/packages/opencode/src/tool/bash.ts
++++ b/packages/opencode/src/tool/bash.ts
+@@ -15,10 +15,13 @@ import { fileURLToPath } from "url"
+ import { Flag } from "@/flag/flag.ts"
+ import path from "path"
+ import { iife } from "@/util/iife"
++import { getBackgroundProcessManager } from "@/shell/background"
+ 
+ const MAX_OUTPUT_LENGTH = Flag.OPENCODE_EXPERIMENTAL_BASH_MAX_OUTPUT_LENGTH || 30_000
+-const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
+ const SIGKILL_TIMEOUT_MS = 200
++const DEFAULT_WAIT_SECONDS = 5
++const MAX_WAIT_SECONDS = 600
++const FAST_FAILURE_CHECK_MS = 1000 // 1 second
+ 
+ export const log = Log.create({ service: "bash-tool" })
+ 
+@@ -52,6 +55,46 @@ const parser = lazy(async () => {
+ 
+ // TODO: we may wanna rename this tool so it works better on other shells
+ 
++// Helper function to format output with metadata
++function formatOutput(
++  output: string,
++  metadata: {
++    truncated?: boolean
++    aborted?: boolean
++    movedToBackground?: boolean
++    pid?: number
++    exitCode?: number | null
++  },
++): string {
++  let result = output
++  const tags: string[] = []
++
++  if (metadata.truncated) {
++    tags.push(`bash tool truncated output as it exceeded ${MAX_OUTPUT_LENGTH} char limit`)
++  }
++
++  if (metadata.aborted) {
++    tags.push("User aborted the command")
++  }
++
++  if (metadata.movedToBackground && metadata.pid) {
++    tags.push(`Command exceeded wait time and was moved to background with PID: ${metadata.pid}`)
++    tags.push(`Use process_output tool with pid=${metadata.pid} to retrieve output`)
++    tags.push(`Use kill ${metadata.pid} bash command to terminate the process`)
++  }
++
++  // Add exit code to output if non-zero (but not for backgrounded processes that are still running)
++  if (!metadata.movedToBackground && metadata.exitCode !== null && metadata.exitCode !== 0) {
++    tags.push(`command exited with code ${metadata.exitCode}`)
++  }
++
++  if (tags.length > 0) {
++    result += "\n\n<bash_metadata>\n" + tags.join("\n") + "\n</bash_metadata>"
++  }
++
++  return result
++}
++
+ export const BashTool = Tool.define("bash", async () => {
+   const shell = iife(() => {
+     const s = process.env.SHELL
+@@ -85,7 +128,6 @@ export const BashTool = Tool.define("bash", async () => {
+     description: DESCRIPTION,
+     parameters: z.object({
+       command: z.string().describe("The command to execute"),
+-      timeout: z.number().describe("Optional timeout in milliseconds").optional(),
+       workdir: z
+         .string()
+         .describe(
+@@ -97,20 +139,29 @@ export const BashTool = Tool.define("bash", async () => {
+         .describe(
+           "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
+         ),
++      wait: z
++        .number()
++        .min(0)
++        .describe(
++          "Seconds to wait before moving command to background (default: 5, max: 600). Use wait=0 for immediate backgrounding. Background processes run indefinitely. Use process_output and process_input tools to interact with background processes.",
++        )
++        .optional(),
+     }),
+     async execute(params, ctx) {
+       const cwd = params.workdir || Instance.directory
+-      if (params.timeout !== undefined && params.timeout < 0) {
+-        throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+-      }
+-      const timeout = params.timeout ?? DEFAULT_TIMEOUT
++
++      // Clamp wait parameter silently
++      const waitSeconds =
++        params.wait !== undefined ? Math.max(0, Math.min(params.wait, MAX_WAIT_SECONDS)) : DEFAULT_WAIT_SECONDS
++      const waitMs = waitSeconds * 1000
++
+       const tree = await parser().then((p) => p.parse(params.command))
+       if (!tree) {
+         throw new Error("Failed to parse command")
+       }
+       const agent = await Agent.get(ctx.agent)
+ 
+-      const checkExternalDirectory = async (dir: string) => {
++      const validateDirectoryPermissions = async (dir: string) => {
+         if (Filesystem.contains(Instance.directory, dir)) return
+         const title = `This command references paths outside of ${Instance.directory}`
+         if (agent.permission.external_directory === "ask") {
+@@ -138,7 +189,7 @@ export const BashTool = Tool.define("bash", async () => {
+         }
+       }
+ 
+-      await checkExternalDirectory(cwd)
++      await validateDirectoryPermissions(cwd)
+ 
+       const permissions = agent.permission.bash
+ 
+@@ -178,7 +229,7 @@ export const BashTool = Tool.define("bash", async () => {
+                   ? resolved.replace(/^\/([a-z])\//, (_, drive) => `${drive.toUpperCase()}:\\`).replace(/\//g, "\\")
+                   : resolved
+ 
+-              await checkExternalDirectory(normalized)
++              await validateDirectoryPermissions(normalized)
+             }
+           }
+         }
+@@ -222,6 +273,63 @@ export const BashTool = Tool.define("bash", async () => {
+         })
+       }
+ 
++      // **EXPLICIT BACKGROUND MODE** - wait: 0
++      if (waitSeconds === 0) {
++        const manager = getBackgroundProcessManager()
++        const { pid, process: bgProcess } = manager.start(params.command, cwd, ctx.sessionID, shell)
++
++        // Initialize metadata streaming
++        ctx.metadata({
++          metadata: {
++            output: "",
++            description: params.description,
++            pid,
++          },
++        })
++
++        // Wait up to 1 second for fast failures, but return immediately if process exits
++        await Promise.race([bgProcess.wait(), Bun.sleep(FAST_FAILURE_CHECK_MS)])
++
++        if (bgProcess.exitError) {
++          throw bgProcess.exitError
++        }
++
++        if (bgProcess.status === "completed") {
++          const info = bgProcess.getInfo()
++          const output = (info.stdout + info.stderr).trim()
++
++          // Stream final output
++          ctx.metadata({
++            metadata: {
++              output,
++              description: params.description,
++              pid,
++            },
++          })
++
++          if (info.exitCode !== null && info.exitCode !== 0) {
++            throw new Error(
++              `Background process ${pid} failed during fast-failure check with exit code ${info.exitCode}\n\n${output}`,
++            )
++          }
++        }
++
++        const output = `Background process started with PID: ${pid}\n\nUse the following tools to interact with this process:\n- process_output: Retrieve output and status\n- process_input: Send input to the process\n- kill ${pid}: Terminate the process`
++
++        return {
++          title: params.description,
++          metadata: {
++            output,
++            description: params.description,
++            pid,
++            exit: null,
++          },
++          output,
++        }
++      }
++
++      // **AUTO-BACKGROUND MODE** - Run for waitMs, then background if still running
++      const startTime = Date.now() // Track original start time
+       const proc = spawn(params.command, {
+         shell,
+         cwd,
+@@ -233,6 +341,11 @@ export const BashTool = Tool.define("bash", async () => {
+       })
+ 
+       let output = ""
++      const combinedOutput: Array<{
++        timestamp: number
++        stream: "stdout" | "stderr"
++        text: string
++      }> = []
+ 
+       // Initialize metadata with empty output
+       ctx.metadata({
+@@ -254,12 +367,32 @@ export const BashTool = Tool.define("bash", async () => {
+         }
+       }
+ 
+-      proc.stdout?.on("data", append)
+-      proc.stderr?.on("data", append)
++      const appendStdout = (chunk: Buffer) => {
++        const text = chunk.toString()
++        append(chunk)
++        combinedOutput.push({
++          timestamp: Date.now(),
++          stream: "stdout",
++          text,
++        })
++      }
++
++      const appendStderr = (chunk: Buffer) => {
++        const text = chunk.toString()
++        append(chunk)
++        combinedOutput.push({
++          timestamp: Date.now(),
++          stream: "stderr",
++          text,
++        })
++      }
++
++      proc.stdout?.on("data", appendStdout)
++      proc.stderr?.on("data", appendStderr)
+ 
+-      let timedOut = false
+       let aborted = false
+       let exited = false
++      let movedToBackground = false
+ 
+       const killTree = async () => {
+         const pid = proc.pid
+@@ -303,15 +436,26 @@ export const BashTool = Tool.define("bash", async () => {
+ 
+       ctx.abort.addEventListener("abort", abortHandler, { once: true })
+ 
+-      const timeoutTimer = setTimeout(() => {
+-        timedOut = true
+-        void killTree()
+-      }, timeout + 100)
++      // Auto-background timer
++      let autoBackgroundResolver: (() => void) | null = null
++      const autoBackgroundTimer = setTimeout(() => {
++        if (!exited && !aborted) {
++          movedToBackground = true
++          log.info("moving command to background", { command: params.command, waitSeconds })
++          if (autoBackgroundResolver) {
++            autoBackgroundResolver()
++          }
++        }
++      }, waitMs)
+ 
+       await new Promise<void>((resolve, reject) => {
++        // Store resolver for auto-background
++        autoBackgroundResolver = resolve
++
+         const cleanup = () => {
+-          clearTimeout(timeoutTimer)
++          clearTimeout(autoBackgroundTimer)
+           ctx.abort.removeEventListener("abort", abortHandler)
++          autoBackgroundResolver = null
+         }
+ 
+         proc.once("exit", () => {
+@@ -327,34 +471,80 @@ export const BashTool = Tool.define("bash", async () => {
+         })
+       })
+ 
+-      let resultMetadata: String[] = ["<bash_metadata>"]
++      // If we triggered auto-background but process hasn't exited, move to background
++      if (movedToBackground && !exited) {
++        // Clean up bash.ts listeners BEFORE adopting to prevent duplicate listening
++        proc.stdout?.removeAllListeners("data")
++        proc.stderr?.removeAllListeners("data")
++        proc.removeAllListeners("exit")
++        proc.removeAllListeners("error")
++        ctx.abort.removeEventListener("abort", abortHandler)
++
++        // Background processes run indefinitely until completion or termination
++
++        // Adopt the existing process (DON'T kill it or restart!)
++        const manager = getBackgroundProcessManager()
++        const { pid } = manager.adopt(
++          proc, // The running process
++          params.command, // Command for reference
++          cwd, // Working directory
++          ctx.sessionID, // Session ID
++          startTime, // Original start time (CRITICAL: preserves timing)
++          output, // Accumulated stdout from first 10s
++          "", // Accumulated stderr (empty - we capture both in output)
++          combinedOutput, // Combined output with timestamps
++        )
+ 
+-      if (output.length > MAX_OUTPUT_LENGTH) {
+-        output = output.slice(0, MAX_OUTPUT_LENGTH)
+-        resultMetadata.push(`bash tool truncated output as it exceeded ${MAX_OUTPUT_LENGTH} char limit`)
+-      }
++        // Set up abort handling for background process
++        if (!ctx.abort.aborted) {
++          const bgAbortHandler = () => manager.kill(pid)
++          ctx.abort.addEventListener("abort", bgAbortHandler)
++        }
+ 
+-      if (timedOut) {
+-        resultMetadata.push(`bash tool terminated commmand after exceeding timeout ${timeout} ms`)
+-      }
++        const finalOutput = formatOutput(output, { movedToBackground: true, pid })
++
++        // Stream final metadata with background info
++        ctx.metadata({
++          metadata: {
++            output: finalOutput,
++            description: params.description,
++            pid,
++          },
++        })
+ 
+-      if (aborted) {
+-        resultMetadata.push("User aborted the command")
++        return {
++          title: params.description,
++          metadata: {
++            output: finalOutput,
++            description: params.description,
++            pid,
++            exit: null,
++          },
++          output: finalOutput,
++        }
+       }
+ 
+-      if (resultMetadata.length > 1) {
+-        resultMetadata.push("</bash_metadata>")
+-        output += "\n\n" + resultMetadata.join("\n")
++      // Normal synchronous completion
++      const truncated = output.length > MAX_OUTPUT_LENGTH
++      if (truncated) {
++        output = output.slice(0, MAX_OUTPUT_LENGTH)
+       }
+ 
++      const finalOutput = formatOutput(output, {
++        truncated,
++        aborted,
++        exitCode: proc.exitCode,
++      })
++
+       return {
+         title: params.description,
+         metadata: {
+-          output,
+-          exit: proc.exitCode,
++          output: finalOutput,
+           description: params.description,
++          pid: 0,
++          exit: proc.exitCode,
+         },
+-        output,
++        output: finalOutput,
+       }
+     },
+   }
+diff --git a/packages/opencode/src/tool/bash.txt b/packages/opencode/src/tool/bash.txt
+index 2773d3b85..97d9e66de 100644
+--- a/packages/opencode/src/tool/bash.txt
++++ b/packages/opencode/src/tool/bash.txt
+@@ -1,4 +1,4 @@
+-Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
++Executes a given bash command in a persistent shell session, ensuring proper handling and security measures.
+ 
+ Before executing the command, please follow these steps:
+ 
+@@ -18,16 +18,20 @@ Before executing the command, please follow these steps:
+ 
+ Usage notes:
+     - The command argument is required.
+-    - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes).
+-  If not specified, commands will timeout after 120000ms (2 minutes).
+-    - It is very helpful if you write a clear, concise description of what this command
+-  does in 5-10 words.
++    - The description argument is required. You must write a clear, concise description of what this command does in 5-10 words.
+     - If the output exceeds 30000 characters, output will be truncated before being
+   returned to you.
+-    - You can use the `run_in_background` parameter to run the command in the background,
+-  which allows you to continue working while the command runs. You can monitor the output
+-  using the Bash tool as it becomes available. You do not need to use '&' at the end of
+-  the command when using this parameter.
++    - You can use the `wait` parameter (in seconds) to control when commands move to 
++  background. Default is 5 seconds. Use wait=0 for immediate backgrounding. 
++  Maximum wait time is 600 seconds (10 minutes).
++    - **Auto-background behavior**: Commands that take longer than the specified wait 
++  time (default: 5 seconds) will automatically be moved to the background and 
++  return a PID. Background processes run indefinitely until completion or termination.
++    - When a command is moved to background (either via wait=0 or automatically after 
++  exceeding the wait time), you receive a PID that you can use with:
++      - `process_output` tool: Retrieve current output and process status
++      - `process_input` tool: Send input to the running process's stdin
++      - `kill <pid>` bash command: Terminate the background process
+ 
+     - Avoid using Bash with the `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or
+   `echo` commands, unless explicitly instructed or when these commands are truly necessary
+diff --git a/packages/opencode/src/tool/process-input.ts b/packages/opencode/src/tool/process-input.ts
+new file mode 100644
+index 000000000..467d04fbc
+--- /dev/null
++++ b/packages/opencode/src/tool/process-input.ts
+@@ -0,0 +1,101 @@
++import z from "zod"
++import { Tool } from "./tool"
++import DESCRIPTION from "./process-input.txt"
++import { getBackgroundProcessManager } from "@/shell/background"
++import { Log } from "@/util/log"
++
++const log = Log.create({ service: "process-input-tool" })
++
++export const ProcessInputTool = Tool.define("process_input", {
++  description: DESCRIPTION,
++  parameters: z.object({
++    pid: z.number().describe("The PID of the background process to send input to"),
++    text: z.string().describe("The text to send to the process's stdin"),
++    close_stdin: z
++      .boolean()
++      .optional()
++      .describe("If true, closes stdin after sending text (sends EOF). Default: false"),
++  }),
++  async execute(params) {
++    const manager = getBackgroundProcessManager()
++    const bgProcess = manager.get(params.pid)
++
++    if (!bgProcess) {
++      log.warn("process not found for input", { pid: params.pid })
++      const result = `No background process found with PID: ${params.pid}\n\nThe process may have already completed or been cleaned up.`
++      const tags = ["error: process_not_found", "reason: Process already completed or cleaned up"]
++      return {
++        title: "Process Not Found",
++        output: result + "\n\n<process_metadata>\n" + tags.join("\n") + "\n</process_metadata>",
++        metadata: {
++          sent: false,
++          error: "process_not_found" as string | null,
++        },
++      }
++    }
++
++    const info = bgProcess.getInfo()
++
++    if (info.status !== "running") {
++      log.warn("attempted to send input to non-running process", {
++        pid: params.pid,
++        status: info.status,
++      })
++      const result = `Cannot send input to process ${params.pid} because it is not running (status: ${info.status}).\n\nOnly running processes can receive input.`
++      const tags = ["error: process_not_running", `status: ${info.status}`]
++      return {
++        title: "Process Not Running",
++        output: result + "\n\n<process_metadata>\n" + tags.join("\n") + "\n</process_metadata>",
++        metadata: {
++          sent: false,
++          error: "process_not_running" as string | null,
++        },
++      }
++    }
++
++    const success = bgProcess.sendInput(params.text)
++
++    if (!success) {
++      log.error("failed to send input to process", { pid: params.pid })
++      const result = `Failed to send input to process ${params.pid}.\n\nStdin may be closed or unavailable.`
++      const tags = ["error: stdin_unavailable", "reason: Stdin may be closed or process ended"]
++      return {
++        title: "Input Failed",
++        output: result + "\n\n<process_metadata>\n" + tags.join("\n") + "\n</process_metadata>",
++        metadata: {
++          sent: false,
++          error: "stdin_unavailable" as string | null,
++        },
++      }
++    }
++
++    if (params.close_stdin) {
++      const proc = bgProcess.process
++      if (proc.stdin && !proc.stdin.destroyed) {
++        proc.stdin.end()
++        log.info("closed stdin for process", { pid: params.pid })
++      }
++    }
++
++    const textPreview = params.text.length > 50 ? params.text.slice(0, 50) + "..." : params.text
++
++    const closedNote = params.close_stdin ? " (stdin closed)" : ""
++
++    log.info("sent input to process", {
++      pid: params.pid,
++      textLength: params.text.length,
++      closedStdin: params.close_stdin,
++    })
++
++    const result = `Successfully sent input to process ${params.pid}${closedNote}.`
++    const tags = [`Text: ${textPreview}`, `Stdin Closed: ${params.close_stdin ? "true" : "false"}`]
++    return {
++      title: "Input Sent",
++      output: result + "\n\n<process_metadata>\n" + tags.join("\n") + "\n</process_metadata>",
++      metadata: {
++        sent: true,
++        error: null as string | null,
++      },
++    }
++  },
++})
+diff --git a/packages/opencode/src/tool/process-input.txt b/packages/opencode/src/tool/process-input.txt
+new file mode 100644
+index 000000000..8cf09fa57
+--- /dev/null
++++ b/packages/opencode/src/tool/process-input.txt
+@@ -0,0 +1,24 @@
++Sends input (stdin) to interactive background processes started with the bash tool.
++
++Usage:
++- Provide the PID and text to send to the process's stdin
++- Use close_stdin parameter to send EOF after the text
++- Only works with running processes that have stdin available
++
++Features:
++- Supports interactive command input (e.g., prompts, REPLs)
++- Can close stdin to signal end of input (EOF)
++- Validates process exists and is still running
++- Returns clear error messages for common failure cases
++
++Tips:
++- Use for interactive programs that wait for user input
++- Set close_stdin: true when done sending all input
++- Check process_output after sending input to see the response
++- Common interactive tools: python REPL, bash prompts, ssh sessions
++- Will fail if process completed or stdin was already closed
++
++Examples:
++- Send command to interactive shell: text: "ls -la\n"
++- Send input and close: text: "exit\n", close_stdin: true
++- Answer prompt: text: "yes\n"
+diff --git a/packages/opencode/src/tool/process-output.ts b/packages/opencode/src/tool/process-output.ts
+new file mode 100644
+index 000000000..ac25ae488
+--- /dev/null
++++ b/packages/opencode/src/tool/process-output.ts
+@@ -0,0 +1,89 @@
++import z from "zod"
++import { Tool } from "./tool"
++import DESCRIPTION from "./process-output.txt"
++import { getBackgroundProcessManager, type ProcessStatus } from "@/shell/background"
++import { Log } from "@/util/log"
++
++const log = Log.create({ service: "process-output-tool" })
++
++export const ProcessOutputTool = Tool.define("process_output", {
++  description: DESCRIPTION,
++  parameters: z.object({
++    pid: z.number().describe("The PID of the background process to retrieve output from"),
++    stream: z
++      .enum(["combined", "stdout", "stderr"])
++      .optional()
++      .describe(
++        "Which output stream(s) to display: 'combined' shows interleaved stdout+stderr (default), 'stdout' shows only stdout, 'stderr' shows only stderr",
++      ),
++  }),
++  async execute(params) {
++    const streamMode = params.stream || "combined"
++    const manager = getBackgroundProcessManager()
++    const bgProcess = manager.get(params.pid)
++
++    if (!bgProcess) {
++      log.warn("process not found", { pid: params.pid })
++      return {
++        title: "Process Not Found",
++        output: `No background process found with PID: ${params.pid}\n\nUse the bash tool output to see available process PIDs.`,
++        metadata: {
++          status: null as ProcessStatus | null,
++          exitCode: null,
++          signal: null,
++          done: true,
++        },
++      }
++    }
++
++    const info = bgProcess.getInfo()
++    let result = ""
++
++    // Use stream parameter to determine output format
++    if (streamMode === "combined") {
++      result = info.combined || "(no output)"
++    } else if (streamMode === "stdout") {
++      result = info.stdout || "(no output)"
++    } else if (streamMode === "stderr") {
++      result = info.stderr || "(no output)"
++    }
++
++    // Add metadata after output (consistent with bash_metadata pattern)
++    const tags: string[] = []
++    tags.push(`Command: ${info.command}`)
++    tags.push(`Working Directory: ${info.workdir}`)
++    tags.push(`Status: ${info.status}`)
++    tags.push(`Started: ${new Date(info.startTime).toISOString()}`)
++
++    if (info.endTime) {
++      tags.push(`Ended: ${new Date(info.endTime).toISOString()}`)
++      const duration = ((info.endTime - info.startTime) / 1000).toFixed(2)
++      tags.push(`Duration: ${duration}s`)
++    }
++
++    if (info.status === "completed" || info.status === "killed") {
++      if (info.exitCode !== null) {
++        tags.push(`Exit Code: ${info.exitCode}`)
++      }
++      if (info.signal) {
++        tags.push(`Signal: ${info.signal}`)
++      }
++    }
++
++    // Always include metadata for process output (provides important context)
++    result += "\n\n<process_metadata>\n" + tags.join("\n") + "\n</process_metadata>"
++
++    log.info("retrieved process output", { pid: params.pid, status: info.status, stream: streamMode })
++
++    return {
++      title: `Process ${params.pid}`,
++      output: result,
++      metadata: {
++        status: info.status as ProcessStatus | null,
++        exitCode: info.exitCode,
++        signal: info.signal,
++        done: info.status !== "running",
++      },
++    }
++  },
++})
+diff --git a/packages/opencode/src/tool/process-output.txt b/packages/opencode/src/tool/process-output.txt
+new file mode 100644
+index 000000000..f3ae815ea
+--- /dev/null
++++ b/packages/opencode/src/tool/process-output.txt
+@@ -0,0 +1,25 @@
++Retrieves output and status from background processes started with the bash tool.
++
++Usage:
++- Provide the PID returned from a background bash command
++- Optionally specify which output stream to display with the stream parameter
++- Returns stdout, stderr (or combined output), exit code, and completion status
++- Works for both running and completed processes
++
++Stream Parameter:
++- stream="combined" (default): Shows stdout and stderr interleaved in chronological order - useful for debugging when timing matters
++- stream="stdout": Shows only stdout output - useful for filtering normal output
++- stream="stderr": Shows only stderr output - useful for filtering error messages
++
++Features:
++- Shows full command details and working directory
++- Displays timestamps for start/end times and duration
++- By default, interleaves stdout and stderr to preserve execution order
++- Indicates if output was truncated (60k for combined, 30k per stream)
++- Returns exit code and signal for completed processes
++
++Tips:
++- Check process status regularly to see if long-running commands have completed
++- Use stream="combined" (default) when you need to see the exact order of outputs
++- Use stream="stdout" or stream="stderr" when you want to isolate specific output
++- Use this tool to monitor progress of background operations
+diff --git a/packages/opencode/src/tool/registry.ts b/packages/opencode/src/tool/registry.ts
+index 7e440a78a..5fcad607e 100644
+--- a/packages/opencode/src/tool/registry.ts
++++ b/packages/opencode/src/tool/registry.ts
+@@ -10,6 +10,8 @@ import { TodoWriteTool, TodoReadTool } from "./todo"
+ import { WebFetchTool } from "./webfetch"
+ import { WriteTool } from "./write"
+ import { InvalidTool } from "./invalid"
++import { ProcessOutputTool } from "./process-output"
++import { ProcessInputTool } from "./process-input"
+ import type { Agent } from "../agent/agent"
+ import { Tool } from "./tool"
+ import { Instance } from "../project/instance"
+@@ -99,6 +101,8 @@ export namespace ToolRegistry {
+       TodoReadTool,
+       WebSearchTool,
+       CodeSearchTool,
++      ProcessOutputTool,
++      ProcessInputTool,
+       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
+       ...custom,
+     ]
+diff --git a/packages/opencode/test/tool/bash-background.test.ts b/packages/opencode/test/tool/bash-background.test.ts
+new file mode 100644
+index 000000000..2d55680af
+--- /dev/null
++++ b/packages/opencode/test/tool/bash-background.test.ts
+@@ -0,0 +1,727 @@
++import { describe, expect, test, beforeEach, afterEach } from "bun:test"
++import path from "path"
++import { BashTool } from "../../src/tool/bash"
++import { ProcessOutputTool } from "../../src/tool/process-output"
++import { ProcessInputTool } from "../../src/tool/process-input"
++import { Instance } from "../../src/project/instance"
++import { getBackgroundProcessManager } from "../../src/shell/background"
++
++const projectRoot = path.join(__dirname, "../..")
++
++const createContext = (sessionID = "test-background") => ({
++  sessionID,
++  messageID: "",
++  toolCallID: "",
++  callID: "",
++  agent: "build",
++  abort: AbortSignal.any([]),
++  metadata: () => {},
++})
++
++// Helper to wait for a condition with timeout
++async function waitFor(
++  condition: () => boolean | Promise<boolean>,
++  timeoutMs = 5000,
++  checkIntervalMs = 100,
++): Promise<void> {
++  const start = Date.now()
++  while (Date.now() - start < timeoutMs) {
++    if (await condition()) return
++    await Bun.sleep(checkIntervalMs)
++  }
++  throw new Error(`Timeout waiting for condition after ${timeoutMs}ms`)
++}
++
++describe("tool.bash-background", () => {
++  let ctx = createContext()
++
++  beforeEach(() => {
++    ctx = createContext()
++  })
++
++  // Note: afterEach cleanup is not needed as each test cleans up its own processes
++  // The background manager is per-instance and persists across tests
++
++  test("explicit background mode returns pid", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const manager = getBackgroundProcessManager()
++        const sleepCmd = process.platform === "win32" ? "timeout /t 5 /nobreak" : "sleep 5"
++
++        const result = await bash.execute(
++          {
++            command: sleepCmd,
++            description: "Sleep for 5 seconds",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        expect(result.output).toContain("Background process started with PID:")
++        expect(result.output).toContain("process_output")
++        expect(result.output).toContain("process_input")
++        expect(result.output).toContain("kill")
++        expect(result.metadata.pid).toBeDefined()
++        expect(result.metadata.exit).toBeNull()
++
++        // Verify process is running
++        const bgProcess = manager.get(result.metadata.pid)
++        expect(bgProcess).toBeDefined()
++        expect(bgProcess?.status).toBe("running")
++
++        // Clean up
++        manager.kill(result.metadata.pid)
++      },
++    })
++  })
++
++  test("explicit background mode fast failure check", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const failCmd = process.platform === "win32" ? "exit 1" : "exit 1"
++
++        try {
++          await bash.execute(
++            {
++              command: failCmd,
++              description: "Command that fails immediately",
++              wait: 0,
++            },
++            ctx,
++          )
++          expect(true).toBe(false) // Should not reach here
++        } catch (err) {
++          expect((err as Error).message).toContain("failed during fast-failure check")
++          expect((err as Error).message).toContain("exit code 1")
++        }
++      },
++    })
++  })
++
++  test(
++    "auto-background after wait time",
++    async () => {
++      await Instance.provide({
++        directory: projectRoot,
++        fn: async () => {
++          const bash = await BashTool.init()
++          const manager = getBackgroundProcessManager()
++          // Use a command that runs longer than wait time
++          const longCmd = process.platform === "win32" ? "timeout /t 20 /nobreak" : "sleep 20"
++
++          const resultPromise = bash.execute(
++            {
++              command: longCmd,
++              description: "Long running command",
++              wait: 2, // 2 seconds wait before backgrounding
++            },
++            ctx,
++          )
++
++          const result = await resultPromise
++
++          expect(result.output).toContain("Command exceeded wait time and was moved to background")
++          expect(result.output).toContain("PID:")
++          expect(result.metadata.pid).toBeDefined()
++          expect(result.metadata.exit).toBeNull()
++
++          // Verify process is running
++          const bgProcess = manager.get(result.metadata.pid)
++          expect(bgProcess).toBeDefined()
++          expect(bgProcess?.status).toBe("running")
++
++          // Clean up
++          manager.kill(result.metadata.pid)
++        },
++      })
++    },
++    { timeout: 20000 },
++  )
++
++  test(
++    "auto-background preserves state and output",
++    async () => {
++      await Instance.provide({
++        directory: projectRoot,
++        fn: async () => {
++          const bash = await BashTool.init()
++          const processOutput = await ProcessOutputTool.init()
++
++          // Command that counts 1-20, will be auto-backgrounded after wait time
++          const cmd =
++            process.platform === "win32"
++              ? 'powershell -Command "1..20 | ForEach-Object { Write-Host $_; Start-Sleep -Seconds 1 }"'
++              : "for i in {1..20}; do echo $i; sleep 1; done"
++
++          const result = await bash.execute(
++            {
++              command: cmd,
++              description: "Counter test",
++              wait: 3, // 3 seconds wait before backgrounding
++            },
++            ctx,
++          )
++
++          expect(result.output).toContain("Command exceeded wait time")
++          expect(result.metadata.pid).toBeDefined()
++
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(result.metadata.pid!)
++
++          // Wait for completion
++          await bgProcess!.wait()
++
++          const output = await processOutput.execute({ pid: result.metadata.pid! }, ctx)
++
++          // CRITICAL: Should see 1-20 continuously, NOT 1-10 then restart at 1
++          expect(output.output).toContain("1\n")
++          expect(output.output).toContain("10\n")
++          expect(output.output).toContain("11\n") // Continuity check
++          expect(output.output).toContain("20\n")
++
++          // Should NOT have duplicate sequence (1-10 appearing twice)
++          const matches = (output.output.match(/^1$/gm) || []).length
++          expect(matches).toBe(1) // Only one "1", not two
++        },
++      })
++    },
++    { timeout: 30000 },
++  )
++
++  test("fast completion returns synchronously", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++
++        const result = await bash.execute(
++          {
++            command: "echo 'fast command'",
++            description: "Fast command",
++          },
++          ctx,
++        )
++
++        expect(result.metadata.exit).toBe(0)
++        expect(result.output).toContain("fast command")
++        expect(result.metadata.pid).toBe(0)
++        expect(result.output).not.toContain("moved to background")
++      },
++    })
++  })
++
++  test("process_output retrieves running process output", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processOutput = await ProcessOutputTool.init()
++
++        // Start a background process that outputs something
++        const cmd =
++          process.platform === "win32"
++            ? "powershell -Command \"echo 'Hello from background'; Start-Sleep -Seconds 5\""
++            : "echo 'Hello from background' && sleep 5"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Background process with output",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Wait a bit for output to be captured
++        await Bun.sleep(500)
++
++        // Retrieve output
++        const outputResult = await processOutput.execute({ pid: shellId }, ctx)
++
++        expect(outputResult.output).toContain("Command:")
++        expect(outputResult.output).toContain("Status: running")
++        expect(outputResult.output).toContain("Hello from background")
++        expect(outputResult.metadata.status).toBe("running")
++        expect(outputResult.metadata.done).toBe(false)
++
++        // Clean up
++        const manager = getBackgroundProcessManager()
++        manager.kill(shellId)
++      },
++    })
++  })
++
++  test("process_output retrieves completed process output", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processOutput = await ProcessOutputTool.init()
++
++        const result = await processOutput.execute({ pid: 99999 }, ctx)
++
++        expect(result.title).toBe("Process Not Found")
++        expect(result.output).toContain("No background process found")
++        expect(result.metadata.status).toBeNull()
++        expect(result.metadata.done).toBe(true)
++      },
++    })
++  })
++
++  test("process_kill terminates running process", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const manager = getBackgroundProcessManager()
++
++        const sleepCmd = process.platform === "win32" ? "timeout /t 30 /nobreak" : "sleep 30"
++
++        const startResult = await bash.execute(
++          {
++            command: sleepCmd,
++            description: "Long sleep",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Verify process is running
++        const bgProcess = manager.get(shellId)
++        expect(bgProcess?.status).toBe("running")
++
++        // Kill the process using manager.kill()
++        manager.kill(shellId)
++
++        // Wait for status to update
++        await Bun.sleep(200)
++
++        // Verify process is killed
++        const killedProcess = manager.get(shellId)
++        expect(killedProcess?.status).toBe("killed")
++      },
++    })
++  })
++
++  test("process_kill handles non-existent process", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const manager = getBackgroundProcessManager()
++
++        // Try to get non-existent process
++        const result = manager.get(99999)
++
++        expect(result).toBeUndefined()
++      },
++    })
++  })
++
++  test("process_kill handles already completed process", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const manager = getBackgroundProcessManager()
++
++        const cmd = process.platform === "win32" ? "echo Done" : "echo 'Done'"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Quick process",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Wait for completion
++        await waitFor(async () => {
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++          return bgProcess?.status === "completed"
++        })
++
++        // Try to kill completed process - manager.kill() is idempotent
++        const bgProcess = manager.get(shellId)
++        expect(bgProcess?.status).toBe("completed")
++
++        // Killing a completed process is a no-op
++        manager.kill(shellId)
++
++        const afterKill = manager.get(shellId)
++        expect(afterKill?.status).toBe("completed")
++      },
++    })
++  })
++
++  test("process_input sends stdin to interactive process", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processInput = await ProcessInputTool.init()
++        const processOutput = await ProcessOutputTool.init()
++
++        // Start a process that reads from stdin
++        const cmd =
++          process.platform === "win32"
++            ? 'powershell -Command "while($line = Read-Host) { Write-Host \\"Got: $line\\" }"'
++            : 'while read line; do echo "Got: $line"; done'
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Interactive stdin reader",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Send input
++        const inputResult = await processInput.execute(
++          {
++            pid: shellId,
++            text: "Hello\n",
++          },
++          ctx,
++        )
++
++        expect(inputResult.title).toBe("Input Sent")
++        expect(inputResult.output).toContain("Successfully sent input")
++        expect(inputResult.metadata.sent).toBe(true)
++
++        // Wait for output
++        await Bun.sleep(500)
++
++        // Check output
++        const outputResult = await processOutput.execute({ pid: shellId }, ctx)
++        expect(outputResult.output).toContain("Got: Hello")
++
++        // Clean up
++        const manager = getBackgroundProcessManager()
++        manager.kill(shellId)
++      },
++    })
++  })
++
++  test("process_input closes stdin with close_stdin flag", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processInput = await ProcessInputTool.init()
++
++        // Start a process that reads until EOF
++        const cmd = process.platform === "win32" ? 'powershell -Command "$input"' : "cat"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Cat stdin",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Send input and close stdin
++        const inputResult = await processInput.execute(
++          {
++            pid: shellId,
++            text: "data\n",
++            close_stdin: true,
++          },
++          ctx,
++        )
++
++        expect(inputResult.output).toContain("stdin closed")
++        expect(inputResult.metadata.sent).toBe(true)
++
++        // Process should exit after stdin closes
++        await waitFor(async () => {
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++          return bgProcess?.status === "completed"
++        }, 3000)
++
++        const manager = getBackgroundProcessManager()
++        const bgProcess = manager.get(shellId)
++        expect(bgProcess?.status).toBe("completed")
++      },
++    })
++  })
++
++  test("process_input handles non-running process", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processInput = await ProcessInputTool.init()
++
++        const cmd = process.platform === "win32" ? "echo Done" : "echo 'Done'"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Quick process",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Wait for completion
++        await waitFor(async () => {
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++          return bgProcess?.status === "completed"
++        })
++
++        // Try to send input to completed process
++        const inputResult = await processInput.execute(
++          {
++            pid: shellId,
++            text: "test\n",
++          },
++          ctx,
++        )
++
++        expect(inputResult.title).toBe("Process Not Running")
++        expect(inputResult.output).toContain("is not running")
++        expect(inputResult.metadata.sent).toBe(false)
++        expect(inputResult.metadata.error).toBe("process_not_running")
++      },
++    })
++  })
++
++  test(
++    "output truncation at 30k characters",
++    async () => {
++      await Instance.provide({
++        directory: projectRoot,
++        fn: async () => {
++          const bash = await BashTool.init()
++          const processOutput = await ProcessOutputTool.init()
++
++          // Generate more than 30k characters of output
++          const cmd =
++            process.platform === "win32"
++              ? 'powershell -Command "1..2000 | ForEach-Object { Write-Host ($_ * 30) }"'
++              : "for i in {1..2000}; do printf '%030d\\n' $i; done"
++
++          const startResult = await bash.execute(
++            {
++              command: cmd,
++              description: "Generate large output",
++              wait: 0,
++            },
++            ctx,
++          )
++
++          const shellId = startResult.metadata.pid
++
++          // Wait for completion
++          await waitFor(async () => {
++            const manager = getBackgroundProcessManager()
++            const bgProcess = manager.get(shellId)
++            return bgProcess?.status === "completed"
++          }, 10000)
++
++          // Check output is truncated
++          const outputResult = await processOutput.execute({ pid: shellId, stream: "stdout" }, ctx)
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++
++          expect(bgProcess?.stdoutTruncated || bgProcess?.stderrTruncated).toBe(true)
++          expect(outputResult.output).toContain("[Output truncated to 30KB - showing most recent output]")
++        },
++      })
++    },
++    { timeout: 15000 },
++  )
++
++  test(
++    "max processes limit",
++    async () => {
++      await Instance.provide({
++        directory: projectRoot,
++        fn: async () => {
++          const bash = await BashTool.init()
++          const sleepCmd = process.platform === "win32" ? "timeout /t 60 /nobreak" : "sleep 60"
++
++          // Start 50 background processes (the max)
++          const shellIds: number[] = []
++          for (let i = 0; i < 50; i++) {
++            const result = await bash.execute(
++              {
++                command: sleepCmd,
++                description: `Job ${i}`,
++                wait: 0,
++              },
++              ctx,
++            )
++            shellIds.push(result.metadata.pid)
++          }
++
++          // Try to start the 51st process
++          try {
++            await bash.execute(
++              {
++                command: sleepCmd,
++                description: "Job 51",
++                wait: 0,
++              },
++              ctx,
++            )
++            expect(true).toBe(false) // Should not reach here
++          } catch (err) {
++            expect((err as Error).message).toContain("Maximum background processes limit")
++            expect((err as Error).message).toContain("50")
++          }
++
++          // Clean up all processes
++          const manager = getBackgroundProcessManager()
++          for (const shellId of shellIds) {
++            manager.kill(shellId)
++          }
++        },
++      })
++    },
++    { timeout: 60000 },
++  )
++
++  test("list all background processes", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const manager = getBackgroundProcessManager()
++
++        // Start multiple processes
++        const sleepCmd = process.platform === "win32" ? "timeout /t 10 /nobreak" : "sleep 10"
++
++        await bash.execute(
++          {
++            command: sleepCmd,
++            description: "Job 1",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        await bash.execute(
++          {
++            command: sleepCmd,
++            description: "Job 2",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const processes = manager.list()
++        expect(processes.length).toBeGreaterThanOrEqual(2)
++
++        for (const process of processes) {
++          expect(process.pid).toBeDefined()
++          expect(process.command).toBeDefined()
++          expect(process?.status).toBeDefined()
++        }
++
++        // Clean up
++        manager.killAll()
++      },
++    })
++  })
++
++  test("process info includes timing information", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processOutput = await ProcessOutputTool.init()
++
++        const cmd = process.platform === "win32" ? "echo Test" : "echo 'Test'"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Timed process",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Wait for completion
++        await waitFor(async () => {
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++          return bgProcess?.status === "completed"
++        })
++
++        const outputResult = await processOutput.execute({ pid: shellId }, ctx)
++
++        expect(outputResult.output).toContain("Started:")
++        expect(outputResult.output).toContain("Ended:")
++        expect(outputResult.output).toContain("Duration:")
++      },
++    })
++  })
++
++  test("stderr is captured separately", async () => {
++    await Instance.provide({
++      directory: projectRoot,
++      fn: async () => {
++        const bash = await BashTool.init()
++        const processOutput = await ProcessOutputTool.init()
++
++        // Command that writes to both stdout and stderr
++        const cmd =
++          process.platform === "win32"
++            ? "powershell -Command \"Write-Host 'stdout message'; Write-Error 'stderr message'\""
++            : "echo 'stdout message' && echo 'stderr message' >&2"
++
++        const startResult = await bash.execute(
++          {
++            command: cmd,
++            description: "Job with stderr",
++            wait: 0,
++          },
++          ctx,
++        )
++
++        const shellId = startResult.metadata.pid
++
++        // Wait for completion
++        await waitFor(async () => {
++          const manager = getBackgroundProcessManager()
++          const bgProcess = manager.get(shellId)
++          return bgProcess?.status === "completed"
++        })
++
++        const outputResult = await processOutput.execute({ pid: shellId }, ctx)
++
++        expect(outputResult.output).toContain("<process_metadata>")
++        expect(outputResult.output).toContain("</process_metadata>")
++        expect(outputResult.output).toContain("stdout message")
++        expect(outputResult.output).toContain("stderr message")
++      },
++    })
++  })
++})
+diff --git a/packages/sdk/js/src/v2/gen/sdk.gen.ts b/packages/sdk/js/src/v2/gen/sdk.gen.ts
+index 3df3f62b7..83cda2091 100644
+--- a/packages/sdk/js/src/v2/gen/sdk.gen.ts
++++ b/packages/sdk/js/src/v2/gen/sdk.gen.ts
+@@ -49,6 +49,7 @@ import type {
+   PathGetResponses,
+   PermissionRespondErrors,
+   PermissionRespondResponses,
++  ProcessListResponses,
+   ProjectCurrentResponses,
+   ProjectListResponses,
+   ProjectUpdateErrors,
+@@ -2203,6 +2204,27 @@ export class Lsp extends HeyApiClient {
+   }
+ }
+ 
++export class Process extends HeyApiClient {
++  /**
++   * List background processes
++   *
++   * Get list of all background processes (running, completed, and killed) for the current OpenCode instance. Processes are identified by shell ID.
++   */
++  public list<ThrowOnError extends boolean = false>(
++    parameters?: {
++      directory?: string
++    },
++    options?: Options<never, ThrowOnError>,
++  ) {
++    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
++    return (options?.client ?? this.client).get<ProcessListResponses, unknown, ThrowOnError>({
++      url: "/process/list",
++      ...options,
++      ...params,
++    })
++  }
++}
++
+ export class Formatter extends HeyApiClient {
+   /**
+    * Get formatter status
+@@ -2587,6 +2609,8 @@ export class OpencodeClient extends HeyApiClient {
+ 
+   lsp = new Lsp({ client: this.client })
+ 
++  process = new Process({ client: this.client })
++
+   formatter = new Formatter({ client: this.client })
+ 
+   tui = new Tui({ client: this.client })
+diff --git a/packages/sdk/js/src/v2/gen/types.gen.ts b/packages/sdk/js/src/v2/gen/types.gen.ts
+index 6d7b6dcdd..52747e41d 100644
+--- a/packages/sdk/js/src/v2/gen/types.gen.ts
++++ b/packages/sdk/js/src/v2/gen/types.gen.ts
+@@ -445,6 +445,31 @@ export type EventMessagePartRemoved = {
+   }
+ }
+ 
++export type EventBackgroundProcessStarted = {
++  type: "background.process.started"
++  properties: {
++    pid: number
++    command: string
++    workdir: string
++  }
++}
++
++export type EventBackgroundProcessCompleted = {
++  type: "background.process.completed"
++  properties: {
++    pid: number
++    exitCode: number | null
++    signal: string | null
++  }
++}
++
++export type EventBackgroundProcessKilled = {
++  type: "background.process.killed"
++  properties: {
++    pid: number
++  }
++}
++
+ export type Permission = {
+   id: string
+   type: string
+@@ -735,6 +760,9 @@ export type Event =
+   | EventMessageRemoved
+   | EventMessagePartUpdated
+   | EventMessagePartRemoved
++  | EventBackgroundProcessStarted
++  | EventBackgroundProcessCompleted
++  | EventBackgroundProcessKilled
+   | EventPermissionUpdated
+   | EventPermissionReplied
+   | EventSessionStatus
+@@ -3622,6 +3650,37 @@ export type LspStatusResponses = {
+ 
+ export type LspStatusResponse = LspStatusResponses[keyof LspStatusResponses]
+ 
++export type ProcessListData = {
++  body?: never
++  path?: never
++  query?: {
++    directory?: string
++  }
++  url: "/process/list"
++}
++
++export type ProcessListResponses = {
++  /**
++   * Successfully retrieved process list
++   */
++  200: Array<{
++    pid: number
++    command: string
++    workdir: string
++    sessionID: string
++    status: "running" | "completed" | "killed"
++    exitCode: number | null
++    signal: string | null
++    stdout: string
++    stderr: string
++    combined: string
++    startTime: number
++    endTime: number | null
++  }>
++}
++
++export type ProcessListResponse = ProcessListResponses[keyof ProcessListResponses]
++
+ export type FormatterStatusData = {
+   body?: never
+   path?: never
+diff --git a/packages/web/astro.config.mjs b/packages/web/astro.config.mjs
+index 3c6367c6a..6262cbc98 100644
+--- a/packages/web/astro.config.mjs
++++ b/packages/web/astro.config.mjs
+@@ -59,7 +59,7 @@ export default defineConfig({
+         "1-0",
+         {
+           label: "Usage",
+-          items: ["tui", "cli", "ide", "zen", "share", "github", "gitlab"],
++          items: ["tui", "cli", "ide", "zen", "share", "github", "gitlab", "background-commands"],
+         },
+ 
+         {
+diff --git a/packages/web/src/content/docs/background-commands.mdx b/packages/web/src/content/docs/background-commands.mdx
+new file mode 100644
+index 000000000..3a9502d8c
+--- /dev/null
++++ b/packages/web/src/content/docs/background-commands.mdx
+@@ -0,0 +1,92 @@
++---
++title: Background commands
++description: Run servers and long tasks without blocking
++---
++
++OpenCode can run long-running commands in the background without blocking your workflow. This lets you start development servers, run builds, or execute tests while continuing to work on other tasks.
++
++The agent automatically manages these background processes and can check their status or retrieve their output at any time. Background processes run indefinitely without timeout.
++
++---
++
++## How it works
++
++Commands that take longer than 5 seconds automatically move to the background. You can also explicitly request immediate backgrounding or specify a custom wait time.
++
++Background processes continue running while you chat with the agent or work on other tasks. The agent can check on them, retrieve their output, send input to interactive programs, or terminate them when needed.
++
++---
++
++## Common use cases
++
++Run development servers, execute test suites, or build projects in the background while continuing other work. OpenCode automatically manages these processes and can check their status or output at any time.
++
++```
++"Start the dev server in the background and then update the API routes"
++```
++
++```
++"Run the test suite in the background and show me the results when done"
++```
++
++---
++
++## Controlling background behavior
++
++You can control when commands move to background using the `wait` parameter:
++
++- **Default (5 seconds)**: Commands automatically background after 5 seconds
++- **Immediate (`wait=0`)**: Command backgrounds instantly after a 1-second fast-failure check
++- **Custom wait (`wait=30`)**: Wait up to 30 seconds before backgrounding (max: 600 seconds)
++
++Examples:
++
++```
++"Start npm run dev with wait=0 so it backgrounds immediately"
++```
++
++```
++"Run sleep 60 with wait=60 to wait for the full duration"
++```
++
++---
++
++## Architecture
++
++OpenCode uses several tools to manage background processes.
++
++---
++
++### Process management
++
++When a command runs in the background, OpenCode receives a process ID (PID) that identifies it. The agent uses this PID to track and interact with the process throughout its lifecycle.
++
++Background processes have three main tools available:
++
++- **bash tool** - Runs commands, with optional `wait` parameter to control backgrounding
++- **process_output tool** - Retrieves current output and status of a background process
++- **process_input tool** - Sends input to interactive background processes
++
++---
++
++### Output handling
++
++The agent can retrieve output from background processes at any time. Output includes both stdout and stderr, interleaved in chronological order by default for accurate debugging.
++
++For processes with heavy output, the agent can filter to show only stdout or only stderr. This helps isolate specific information like build logs or error messages.
++
++---
++
++### Process lifecycle
++
++Background processes run indefinitely without timeout until they complete naturally or are terminated. The agent can retrieve output from finished processes, making it easy to check results later.
++
++When you close OpenCode or end your session, all background processes are automatically terminated and cleaned up.
++
++---
++
++## System limits
++
++OpenCode maintains some limits on background processes to ensure system stability.
++
++A maximum of 50 background processes can run simultaneously. Output is limited to 30KB per stream (stdout/stderr) or 60KB combined, with truncation showing the most recent content when limits are exceeded.
