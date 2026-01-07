@@ -58,13 +58,55 @@ export namespace ResourceRegistry {
     const s = await state()
     log.info("searching resources", { query, limit, providerCount: s.providers.length })
 
-    // Search all providers in parallel with timeout
-    const searchPromises = s.providers.map(async (provider) => {
+    // Parse URI-based queries (e.g., "agent://", "agent://coder", "file:///path")
+    let targetProviders = s.providers
+    let searchQuery = query
+
+    if (query.includes("://")) {
+      try {
+        // Try to parse as URL to extract scheme
+        const url = new URL(query)
+        const scheme = url.protocol.slice(0, -1) // Remove trailing ':'
+
+        // Filter to providers that handle this scheme
+        targetProviders = s.providers.filter((p) => p.schemes.includes(scheme))
+
+        // Extract search term after scheme (e.g., "agent://coder" -> "coder")
+        // For just scheme queries like "agent://", this will be empty string
+        searchQuery = url.pathname + url.search + url.hash
+
+        log.info("URI-based search", {
+          originalQuery: query,
+          scheme,
+          searchQuery,
+          matchedProviders: targetProviders.map((p) => p.name),
+        })
+      } catch {
+        // Not a valid URL, treat as partial URI (e.g., "agent://" without valid path)
+        // Try to extract scheme from patterns like "agent://"
+        const schemeMatch = query.match(/^([a-z][a-z0-9+.-]*):\/\//i)
+        if (schemeMatch) {
+          const scheme = schemeMatch[1].toLowerCase()
+          targetProviders = s.providers.filter((p) => p.schemes.includes(scheme))
+          searchQuery = query.substring(schemeMatch[0].length) // Remove "scheme://" prefix
+
+          log.info("partial URI search", {
+            originalQuery: query,
+            scheme,
+            searchQuery,
+            matchedProviders: targetProviders.map((p) => p.name),
+          })
+        }
+      }
+    }
+
+    // Search target providers in parallel with timeout
+    const searchPromises = targetProviders.map(async (provider) => {
       try {
         const timeoutPromise = new Promise<Resource[]>((_, reject) =>
           setTimeout(() => reject(new Error("Search timeout")), SEARCH_TIMEOUT_MS),
         )
-        const searchPromise = provider.search(query, limit)
+        const searchPromise = provider.search(searchQuery, limit)
         const results = await Promise.race([searchPromise, timeoutPromise])
 
         return results.map((r) => ({ resource: r, provider }))

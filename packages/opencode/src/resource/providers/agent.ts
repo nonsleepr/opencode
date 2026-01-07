@@ -12,9 +12,14 @@ export class AgentResourceProvider implements ResourceProvider {
   async search(query: string, limit: number): Promise<Resource[]> {
     const agents = await Agent.list()
 
-    // Filter: non-hidden, name contains query
+    // If query is empty (URI-based search like "agent://"), return all agents
+    // Otherwise filter by name
     const matches = agents
-      .filter((a) => !a.hidden && a.name.toLowerCase().includes(query.toLowerCase()))
+      .filter((a) => {
+        if (a.hidden) return false
+        if (query === "") return true
+        return a.name.toLowerCase().includes(query.toLowerCase())
+      })
       .slice(0, limit)
 
     return matches.map((a) => ({

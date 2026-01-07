@@ -24,6 +24,10 @@ export class MCPResourceProvider implements ResourceProvider {
 
       const matches = Object.values(mcpResources)
         .filter((r) => {
+          // Empty query means show all (for scheme-based searches like "file://")
+          if (lowerQuery === "") return true
+
+          // Search name, description, or URI
           return (
             r.name.toLowerCase().includes(lowerQuery) ||
             r.uri.toLowerCase().includes(lowerQuery) ||
