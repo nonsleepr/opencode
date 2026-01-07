@@ -52,9 +52,15 @@ export type AutocompleteRef = {
 
 export type AutocompleteOption = {
   display: string
-  aliases?: string[]
-  disabled?: boolean
   description?: string
+  disabled?: boolean
+  aliases?: string[]
+  searchFields?: {
+    name: string
+    aliases: string[]
+    uri?: string
+    clientName?: string
+  }
   onSelect?: () => void
 }
 
@@ -204,6 +210,10 @@ export function Autocomplete(props: {
 
             options.push({
               display: Locale.truncateMiddle(filename, width),
+              searchFields: {
+                name: filename,
+                aliases: [],
+              },
               onSelect: () => {
                 insertPart(filename, {
                   type: "file",
@@ -246,6 +256,12 @@ export function Autocomplete(props: {
             options.push({
               display,
               description: resource.description,
+              searchFields: {
+                name: resourceName,
+                aliases: [],
+                uri: resourceUri,
+                clientName: resource.metadata?.clientName,
+              },
               onSelect: () => {
                 if (isAgent) {
                   // Agent resource
@@ -485,13 +501,30 @@ export function Autocomplete(props: {
     }
 
     const result = fuzzysort.go(removeLineRange(currentFilter), mixed, {
-      keys: [(obj) => removeLineRange(obj.display.trimEnd()), "description", (obj) => obj.aliases?.join(" ") ?? ""],
+      keys: [
+        // Primary search fields
+        (obj) => obj.searchFields?.name ?? obj.display.trimEnd(),
+        (obj) => removeLineRange(obj.display.trimEnd()),
+        (obj) => obj.description ?? "",
+        // Secondary search fields
+        (obj) => (obj.searchFields?.aliases ?? obj.aliases ?? []).join(" "),
+        (obj) => obj.searchFields?.uri ?? "",
+        (obj) => obj.searchFields?.clientName ?? "",
+      ],
       limit: 10,
+      threshold: -10000,
       scoreFn: (objResults) => {
-        const displayResult = objResults[0]
+        // Boost exact prefix matches on name or display
+        const nameResult = objResults[0]
+        const displayResult = objResults[1]
+
+        if (nameResult && nameResult.target.startsWith(removeLineRange(currentFilter))) {
+          return objResults.score * 2
+        }
         if (displayResult && displayResult.target.startsWith(store.visible + currentFilter)) {
           return objResults.score * 2
         }
+
         return objResults.score
       },
     })
