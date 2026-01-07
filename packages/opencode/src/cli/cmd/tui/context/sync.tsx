@@ -10,7 +10,6 @@ import type {
   PermissionRequest,
   LspStatus,
   McpStatus,
-  McpResource,
   FormatterStatus,
   SessionStatus,
   ProviderListResponse,
@@ -64,7 +63,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         [key: string]: McpStatus
       }
       mcp_resource: {
-        [key: string]: McpResource
+        [key: string]: any
       }
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined

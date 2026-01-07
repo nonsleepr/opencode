@@ -29,10 +29,10 @@ Give me a quick summary of the codebase.
 
 ## File references
 
-You can reference files in your messages using `@`. This does a fuzzy file search in the current working directory.
+You can reference files and other resources in your messages using `@`. This does a fuzzy search in the current working directory.
 
 :::tip
-You can also use `@` to reference files in your messages.
+Type `@` followed by a filename to fuzzy search and attach files to your prompt. You can also reference other resources like agents, sessions, and more through plugins.
 :::
 
 ```text "@packages/functions/src/api/index.ts"
@@ -40,6 +40,28 @@ How is auth handled in @packages/functions/src/api/index.ts?
 ```
 
 The content of the file is added to the conversation automatically.
+
+### Reference agents
+
+You can use `@` to reference agents in your prompts:
+
+```text
+@explore find authentication code in the API
+```
+
+### Reference line ranges
+
+Specify line ranges when referencing files:
+
+```text
+@src/app.ts#10-20
+```
+
+This includes only lines 10-20 from the file.
+
+### Plugin resources
+
+Plugins can add custom resource types that appear in `@` autocomplete. See [Resources](/docs/resources) for details.
 
 ---
 

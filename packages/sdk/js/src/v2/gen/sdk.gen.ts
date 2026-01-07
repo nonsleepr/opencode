@@ -28,6 +28,7 @@ import type {
   FileReadResponses,
   FileStatusResponses,
   FindFilesResponses,
+  FindResourcesResponses,
   FindSymbolsResponses,
   FindTextResponses,
   FormatterStatusResponses,
@@ -1956,6 +1957,38 @@ export class Find extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<FindTextResponses, unknown, ThrowOnError>({
       url: "/find",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Find resources
+   *
+   * Search for resources (files, agents, sessions, MCP resources, etc.) in the project
+   */
+  public resources<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      query: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "query" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<FindResourcesResponses, unknown, ThrowOnError>({
+      url: "/find/resource",
       ...options,
       ...params,
     })

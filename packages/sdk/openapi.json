@@ -3783,6 +3783,78 @@
         ]
       }
     },
+    "/find/resource": {
+      "get": {
+        "operationId": "find.resources",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "directory",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "summary": "Find resources",
+        "description": "Search for resources (files, agents, sessions, MCP resources, etc.) in the project",
+        "responses": {
+          "200": {
+            "description": "Resource objects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "uri": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "providerName": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["uri", "name", "providerName"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.find.resources({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/find/file": {
       "get": {
         "operationId": "find.files",
@@ -4622,7 +4694,25 @@
                     "type": "string"
                   },
                   "additionalProperties": {
-                    "$ref": "#/components/schemas/McpResource"
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "uri": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "client": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["name", "uri", "client"]
                   }
                 }
               }
@@ -8879,6 +8969,11 @@
             "description": "Custom username to display in conversations instead of system username",
             "type": "string"
           },
+          "resource_display_mode": {
+            "description": "Display mode for resource autocomplete: 'name' shows resource names, 'uri' shows full URIs (default: 'name')",
+            "type": "string",
+            "enum": ["name", "uri"]
+          },
           "mode": {
             "description": "@deprecated Use `agent` field instead.",
             "type": "object",
@@ -10042,27 +10137,6 @@
             "$ref": "#/components/schemas/MCPStatusNeedsClientRegistration"
           }
         ]
-      },
-      "McpResource": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "mimeType": {
-            "type": "string"
-          },
-          "client": {
-            "type": "string"
-          }
-        },
-        "required": ["name", "uri", "client"]
       },
       "LSPStatus": {
         "type": "object",

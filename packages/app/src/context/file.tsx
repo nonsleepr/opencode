@@ -274,9 +274,21 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       selectedLines,
       setSelectedLines,
       searchFiles: (query: string) =>
-        sdk.client.find.files({ query, dirs: "false" }).then((x) => (x.data ?? []).map(normalize)),
+        sdk.client.find
+          .resources({ query, limit: 100 })
+          .then((x) =>
+            (x.data ?? [])
+              .filter((item) => typeof item === "string" || item.uri?.startsWith("file://"))
+              .map((item) => (typeof item === "string" ? normalize(item) : normalize(item.name))),
+          ),
       searchFilesAndDirectories: (query: string) =>
-        sdk.client.find.files({ query, dirs: "true" }).then((x) => (x.data ?? []).map(normalize)),
+        sdk.client.find
+          .resources({ query, limit: 100 })
+          .then((x) =>
+            (x.data ?? [])
+              .filter((item) => typeof item === "string" || item.uri?.startsWith("file://"))
+              .map((item) => (typeof item === "string" ? normalize(item) : normalize(item.name))),
+          ),
     }
   },
 })

@@ -28,17 +28,6 @@ export namespace MCP {
   const log = Log.create({ service: "mcp" })
   const DEFAULT_TIMEOUT = 30_000
 
-  export const Resource = z
-    .object({
-      name: z.string(),
-      uri: z.string(),
-      description: z.string().optional(),
-      mimeType: z.string().optional(),
-      client: z.string(),
-    })
-    .meta({ ref: "McpResource" })
-  export type Resource = z.infer<typeof Resource>
-
   export const ToolsChanged = BusEvent.define(
     "mcp.tools.changed",
     z.object({
@@ -147,7 +136,9 @@ export namespace MCP {
   // Prompt cache types
   type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
 
+  // Resource types
   type ResourceInfo = Awaited<ReturnType<MCPClient["listResources"]>>["resources"][number]
+
   type McpEntry = NonNullable<Config.Info["mcp"]>[string]
   function isMcpConfigured(entry: McpEntry): entry is Config.Mcp {
     return typeof entry === "object" && entry !== null && "type" in entry
@@ -225,9 +216,10 @@ export namespace MCP {
     return commands
   }
 
+  // Helper function to fetch resources for a specific client
   async function fetchResourcesForClient(clientName: string, client: Client) {
     const resources = await client.listResources().catch((e) => {
-      log.error("failed to get prompts", { clientName, error: e.message })
+      log.error("failed to get resources", { clientName, error: e.message })
       return undefined
     })
 
@@ -647,7 +639,7 @@ export namespace MCP {
     const client = clientsSnapshot[clientName]
 
     if (!client) {
-      log.warn("client not found for prompt", {
+      log.warn("client not found for resource", {
         clientName: clientName,
       })
       return undefined
@@ -658,7 +650,7 @@ export namespace MCP {
         uri: resourceUri,
       })
       .catch((e) => {
-        log.error("failed to get prompt from MCP server", {
+        log.error("failed to read resource from MCP server", {
           clientName: clientName,
           resourceUri: resourceUri,
           error: e.message,

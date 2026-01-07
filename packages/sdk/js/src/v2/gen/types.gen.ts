@@ -1544,6 +1544,10 @@ export type Config = {
    */
   username?: string
   /**
+   * Display mode for resource autocomplete: 'name' shows resource names, 'uri' shows full URIs (default: 'name')
+   */
+  resource_display_mode?: "name" | "uri"
+  /**
    * @deprecated Use `agent` field instead.
    */
   mode?: {
@@ -1960,14 +1964,6 @@ export type McpStatus =
   | McpStatusFailed
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
-
-export type McpResource = {
-  name: string
-  uri: string
-  description?: string
-  mimeType?: string
-  client: string
-}
 
 export type LspStatus = {
   id: string
@@ -3798,6 +3794,32 @@ export type FindTextResponses = {
 
 export type FindTextResponse = FindTextResponses[keyof FindTextResponses]
 
+export type FindResourcesData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    query: string
+    limit?: number
+  }
+  url: "/find/resource"
+}
+
+export type FindResourcesResponses = {
+  /**
+   * Resource objects
+   */
+  200: Array<{
+    uri: string
+    name: string
+    description?: string
+    mimeType?: string
+    providerName: string
+  }>
+}
+
+export type FindResourcesResponse = FindResourcesResponses[keyof FindResourcesResponses]
+
 export type FindFilesData = {
   body?: never
   path?: never
@@ -4205,7 +4227,13 @@ export type ExperimentalResourceListResponses = {
    * MCP resources
    */
   200: {
-    [key: string]: McpResource
+    [key: string]: {
+      name: string
+      uri: string
+      description?: string
+      mimeType?: string
+      client: string
+    }
   }
 }
 

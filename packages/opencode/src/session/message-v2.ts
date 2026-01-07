@@ -446,13 +446,23 @@ export namespace MessageV2 {
               text: part.text,
             })
           // text/plain and directory files are converted into text parts, ignore them
-          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory")
+          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
+            // Normalize MIME types for AI SDK compatibility
+            // AI SDK only supports standard media types, so convert language-specific types to text/plain
+            let mediaType = part.mime
+            if (
+              mediaType.startsWith("text/") &&
+              !["text/plain", "text/html", "text/css", "text/csv", "text/markdown"].includes(mediaType)
+            ) {
+              mediaType = "text/plain"
+            }
             userMessage.parts.push({
               type: "file",
               url: part.url,
-              mediaType: part.mime,
+              mediaType,
               filename: part.filename,
             })
+          }
 
           if (part.type === "compaction") {
             userMessage.parts.push({
@@ -506,12 +516,22 @@ export namespace MessageV2 {
                       type: "text",
                       text: `Tool ${part.tool} returned an attachment:`,
                     },
-                    ...part.state.attachments.map((attachment) => ({
-                      type: "file" as const,
-                      url: attachment.url,
-                      mediaType: attachment.mime,
-                      filename: attachment.filename,
-                    })),
+                    ...part.state.attachments.map((attachment) => {
+                      // Normalize MIME types for AI SDK compatibility
+                      let mediaType = attachment.mime
+                      if (
+                        mediaType.startsWith("text/") &&
+                        !["text/plain", "text/html", "text/css", "text/csv", "text/markdown"].includes(mediaType)
+                      ) {
+                        mediaType = "text/plain"
+                      }
+                      return {
+                        type: "file" as const,
+                        url: attachment.url,
+                        mediaType,
+                        filename: attachment.filename,
+                      }
+                    }),
                   ],
                 })
               }

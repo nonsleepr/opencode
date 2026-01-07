@@ -66,7 +66,7 @@ export namespace Plugin {
   })
 
   export async function trigger<
-    Name extends Exclude<keyof Required<Hooks>, "auth" | "event" | "tool">,
+    Name extends Exclude<keyof Required<Hooks>, "auth" | "event" | "tool" | "resource.provider">,
     Input = Parameters<Required<Hooks>[Name]>[0],
     Output = Parameters<Required<Hooks>[Name]>[1],
   >(name: Name, input: Input, output: Output): Promise<Output> {
@@ -76,7 +76,7 @@ export namespace Plugin {
       if (!fn) continue
       // @ts-expect-error if you feel adventurous, please fix the typing, make sure to bump the try-counter if you
       // give up.
-      // try-counter: 2
+      // try-counter: 3
       await fn(input, output)
     }
     return output
@@ -89,6 +89,45 @@ export namespace Plugin {
   export async function init() {
     const hooks = await state().then((x) => x.hooks)
     const config = await Config.get()
+
+    // Register built-in resource providers
+    const { ResourceRegistry } = await import("../resource/registry")
+    const { FileResourceProvider } = await import("../resource/providers/file")
+    const { DataResourceProvider } = await import("../resource/providers/data")
+    const { AgentResourceProvider } = await import("../resource/providers/agent")
+
+    await ResourceRegistry.register(new FileResourceProvider())
+    await ResourceRegistry.register(new DataResourceProvider())
+    await ResourceRegistry.register(new AgentResourceProvider())
+
+    // Register MCP resource provider
+    const { MCP } = await import("../mcp")
+    const { MCPResourceProvider } = await import("../resource/providers/mcp")
+
+    const mcpProvider = new MCPResourceProvider()
+
+    // Initial scheme population
+    await mcpProvider.updateSchemes()
+
+    await ResourceRegistry.register(mcpProvider)
+    log.info("registered MCP resource provider", { schemes: mcpProvider.schemes })
+
+    // Listen to MCP changes and refresh schemes
+    // When MCP tools change, resources might have changed too
+    Bus.subscribe(MCP.ToolsChanged, async (event) => {
+      log.info("MCP tools changed, refreshing resource provider", { server: event.properties.server })
+      await mcpProvider.updateSchemes()
+    })
+
+    // Register plugin resource providers
+    for (const hook of hooks) {
+      // @ts-ignore resource.provider hook not yet in types
+      if (hook["resource.provider"]) {
+        // @ts-ignore resource.provider hook not yet in types
+        await ResourceRegistry.register(hook["resource.provider"])
+      }
+    }
+
     for (const hook of hooks) {
       // @ts-expect-error this is because we haven't moved plugin to sdk v2
       await hook.config?.(config)

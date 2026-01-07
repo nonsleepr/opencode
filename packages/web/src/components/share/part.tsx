@@ -505,13 +505,13 @@ export function WebFetchTool(props: ToolProps) {
 }
 
 export function ReadTool(props: ToolProps) {
-  const filePath = createMemo(() => stripWorkingDirectory(props.state.input?.filePath, props.message.path.cwd))
+  const filePath = createMemo(() => stripWorkingDirectory(props.state.input?.path, props.message.path.cwd))
 
   return (
     <>
       <div data-component="tool-title">
         <span data-slot="name">Read</span>
-        <span data-slot="target" title={props.state.input?.filePath}>
+        <span data-slot="target" title={props.state.input?.path}>
           {filePath()}
         </span>
       </div>

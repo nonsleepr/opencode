@@ -307,6 +307,54 @@ Levels: `debug`, `info`, `warn`, `error`. See [SDK documentation](https://openco
 
 ---
 
+### Resource providers
+
+Plugins can extend the `@` reference system by providing custom resource types. This allows you to reference sessions, documentation, database schemas, or any other contextual data in your prompts.
+
+```ts title=".opencode/plugin/session-resources.ts"
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const SessionResourcePlugin: Plugin = async (ctx) => {
+  return {
+    "resource.provider": {
+      name: "sessions",
+      schemes: ["opencode"],
+
+      async search(query: string, limit: number) {
+        const sessions = await ctx.client.session.list({ limit: 50 })
+        return sessions
+          .filter((s) => s.title?.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, limit)
+          .map((s) => ({
+            uri: `opencode://session/${s.id}`,
+            name: s.title ?? s.id,
+            mimeType: "text/plain",
+            metadata: {
+              subtitle: `[sessions] · ${formatDate(s.createdAt)}`,
+            },
+          }))
+      },
+
+      async read(uri: string) {
+        const sessionId = uri.replace("opencode://session/", "")
+        const session = await ctx.client.session.get({ id: sessionId })
+        return {
+          uri,
+          mimeType: "text/plain",
+          text: formatSessionHistory(session),
+        }
+      },
+    },
+  }
+}
+```
+
+After installing this plugin, you can reference sessions in prompts using `@session-title`, and they'll appear in autocomplete as `Session Title · [sessions] · timestamp`.
+
+Learn more in the [Resources](/docs/resources) documentation.
+
+---
+
 ### Compaction hooks
 
 Customize the context included when a session is compacted:

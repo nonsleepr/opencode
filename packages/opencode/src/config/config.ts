@@ -818,6 +818,12 @@ export namespace Config {
         .string()
         .optional()
         .describe("Custom username to display in conversations instead of system username"),
+      resource_display_mode: z
+        .enum(["name", "uri"])
+        .optional()
+        .describe(
+          "Display mode for resource autocomplete: 'name' shows resource names, 'uri' shows full URIs (default: 'name')",
+        ),
       mode: z
         .object({
           build: Agent.optional(),

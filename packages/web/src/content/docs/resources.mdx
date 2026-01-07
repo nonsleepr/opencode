@@ -1,0 +1,494 @@
+---
+title: Resources
+description: Extend @ references with custom resource providers
+---
+
+Resources are the foundation of OpenCode's @ reference system. When you type `@file.ts` or `@agent-name`, you're referencing a resource. The resource system is extensible - plugins can add custom resource types like sessions, documentation, database schemas, or anything else.
+
+---
+
+## What are resources?
+
+A **resource** is any contextual data that can be referenced via a URI:
+
+- **Files**: `file:///path/to/file.ts`
+- **Agents**: `agent://explore`
+- **Sessions**: `opencode://session/ses_123`
+- **Documentation**: `docs://react/useEffect`
+- **Git refs**: `git://main/README.md`
+- **Database schemas**: `db://users_table`
+- **MCP resources**: Any URI from MCP servers
+
+Resources are identified by URIs and can be searched, read, and referenced in prompts using the `@` syntax.
+
+---
+
+## Built-in resource types
+
+OpenCode includes several built-in resource providers:
+
+### Files
+
+The most common resource type. Reference files and directories in your project.
+
+```
+@src/app.ts
+@src/components/
+@README.md#10-20
+```
+
+Files have no display prefix and appear as plain paths in autocomplete.
+
+---
+
+### Agents
+
+Reference agents to invoke them in your prompts.
+
+```
+@explore find authentication code
+@general analyze this pattern
+```
+
+Agents appear with a 🤖 emoji prefix in autocomplete.
+
+---
+
+## Create a resource provider
+
+Plugins can register custom resource providers to add new types of @ references.
+
+---
+
+### Basic structure
+
+```ts title=".opencode/plugin/my-resources.ts"
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const MyResourcePlugin: Plugin = async (ctx) => {
+  return {
+    "resource.provider": {
+      name: "myresources",
+      schemes: ["docs"],
+
+      async search(query: string, limit: number) {
+        // Return resources matching the query
+        return [
+          {
+            uri: "docs://example",
+            name: "Example Resource",
+            metadata: {
+              subtitle: "[docs]", // Shows as "Example Resource · [docs]"
+            },
+          },
+        ]
+      },
+
+      async read(uri: string) {
+        // Return the content of a resource
+        return {
+          uri,
+          mimeType: "text/plain",
+          text: "Resource content here",
+        }
+      },
+    },
+  }
+}
+```
+
+---
+
+### Resource provider interface
+
+A resource provider must implement the following:
+
+---
+
+#### name: string
+
+Unique identifier for your provider (e.g., `"sessions"`, `"github"`).
+
+---
+
+#### schemes: string[]
+
+URI schemes this provider handles (e.g., `["opencode"]`, `["git"]`, `["docs"]`).
+
+Multiple providers can handle the same scheme - results are merged.
+
+---
+
+#### search(query: string, limit: number): Promise&lt;Resource[]&gt;
+
+Search for resources matching the query. Called when user types `@query`.
+
+**Timeout:** Searches have a 2-second timeout to prevent blocking the UI.
+
+Returns an array of resources:
+
+```ts
+{
+  uri: string              // e.g., "opencode://session/ses_123"
+  name: string             // Display name (e.g., "Debug authentication")
+  description?: string     // Optional description
+  mimeType?: string        // e.g., "text/plain"
+  metadata?: {
+    subtitle?: string      // Provider/timestamp info shown after · separator
+    [key: string]: any     // Provider-specific metadata
+  }
+}
+```
+
+**Display format:** Resources appear as `name · subtitle` in autocomplete.
+
+Examples:
+
+- Files: `src/app.ts` (no subtitle)
+- Agents: `explore · 🤖` (emoji subtitle)
+- Sessions: `Debug auth · [sessions]` (provider tag)
+- MCP: `Git Working Directory · [git]` (MCP client name)
+
+---
+
+#### read(uri: string): Promise&lt;ResourceContent&gt;
+
+Read the content of a resource. Called when the resource is referenced in a prompt.
+
+Returns:
+
+```ts
+{
+  uri: string
+  mimeType: string
+  text?: string            // For text resources
+  blob?: string            // For binary (base64)
+}
+```
+
+---
+
+#### subscribe?(uri: string, callback: (uri: string) =&gt; void): Promise&lt;void&gt;
+
+Optional. Subscribe to resource changes (for MCP compatibility).
+
+---
+
+## Examples
+
+Here are complete examples showing how to create resource providers.
+
+---
+
+## Example: Session resources
+
+Here's a complete example that adds session references:
+
+```ts title=".opencode/plugin/session-resources.ts"
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const SessionResourcePlugin: Plugin = async (ctx) => {
+  const { client } = ctx
+
+  return {
+    "resource.provider": {
+      name: "sessions",
+      schemes: ["opencode"],
+
+      async search(query: string, limit: number) {
+        // Fetch recent sessions
+        const sessions = await client.session.list({ limit: 50 })
+
+        // Filter by title
+        const matches = sessions
+          .filter((s) => s.title?.toLowerCase().includes(query.toLowerCase()) || s.id.includes(query))
+          .slice(0, limit)
+
+        // Return as resources
+        return matches.map((session) => ({
+          uri: `opencode://session/${session.id}`,
+          name: session.title ?? session.id,
+          mimeType: "text/plain",
+          metadata: {
+            subtitle: `[sessions] · ${formatTimestamp(session.createdAt)}`,
+            agent: session.agent,
+          },
+        }))
+      },
+
+      async read(uri: string) {
+        // Extract session ID from URI
+        const sessionId = uri.replace("opencode://session/", "")
+
+        // Fetch session content
+        const session = await client.session.get({ id: sessionId })
+
+        // Format as text
+        const content = session.messages.map((m) => `[${m.role}]: ${m.content}`).join("\n\n")
+
+        return {
+          uri,
+          mimeType: "text/plain",
+          text: content,
+        }
+      },
+    },
+  }
+}
+
+function formatTimestamp(date: string): string {
+  const now = Date.now()
+  const then = new Date(date).getTime()
+  const diff = now - then
+
+  const hours = Math.floor(diff / (1000 * 60 * 60))
+  if (hours < 24) return `${hours}h ago`
+
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+```
+
+### Usage
+
+After installing this plugin, you can reference sessions:
+
+```
+@debug auth
+```
+
+Autocomplete shows:
+
+```
+Debug authentication flow · [sessions] · 2h ago
+Debug middleware · [sessions] · yesterday
+```
+
+When selected, the session content is injected into the prompt context.
+
+---
+
+## Example: Documentation resources
+
+Add references to external documentation:
+
+```ts title=".opencode/plugin/docs-resources.ts"
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const DocsResourcePlugin: Plugin = async (ctx) => {
+  // Index of documentation
+  const docs = {
+    "react/useEffect": {
+      title: "React useEffect Hook",
+      url: "https://react.dev/reference/react/useEffect",
+      content: "...", // Cached content
+    },
+    "react/useState": {
+      title: "React useState Hook",
+      url: "https://react.dev/reference/react/useState",
+      content: "...",
+    },
+  }
+
+  return {
+    "resource.provider": {
+      name: "docs",
+      schemes: ["docs"],
+
+      async search(query: string, limit: number) {
+        const matches = Object.entries(docs)
+          .filter(
+            ([key, doc]) => key.includes(query.toLowerCase()) || doc.title.toLowerCase().includes(query.toLowerCase()),
+          )
+          .slice(0, limit)
+
+        return matches.map(([key, doc]) => ({
+          uri: `docs://${key}`,
+          name: doc.title,
+          description: doc.url,
+          mimeType: "text/markdown",
+          metadata: {
+            subtitle: "[docs]",
+          },
+        }))
+      },
+
+      async read(uri: string) {
+        const key = uri.replace("docs://", "")
+        const doc = docs[key]
+
+        if (!doc) {
+          throw new Error(`Documentation not found: ${key}`)
+        }
+
+        return {
+          uri,
+          mimeType: "text/markdown",
+          text: doc.content,
+        }
+      },
+    },
+  }
+}
+```
+
+---
+
+## MCP integration
+
+Resource providers are compatible with the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). You can wrap MCP servers as resource providers:
+
+```ts title=".opencode/plugin/mcp-resources.ts"
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const MCPResourcePlugin: Plugin = async (ctx) => {
+  // Connect to MCP server
+  const mcpClient = await connectToMCPServer("github")
+
+  return {
+    "resource.provider": {
+      name: "github",
+      schemes: ["github"],
+
+      async search(query: string, limit: number) {
+        // Call MCP resources/list
+        const response = await mcpClient.request("resources/list", {})
+
+        return response.resources
+          .filter((r) => r.name.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, limit)
+          .map((r) => ({
+            uri: r.uri,
+            name: r.name,
+            description: r.description,
+            mimeType: r.mimeType,
+            metadata: {
+              subtitle: "[github]",
+            },
+          }))
+      },
+
+      async read(uri: string) {
+        // Call MCP resources/read
+        const response = await mcpClient.request("resources/read", { uri })
+        const content = response.contents[0]
+
+        return {
+          uri: content.uri,
+          mimeType: content.mimeType,
+          text: content.text,
+          blob: content.blob,
+        }
+      },
+    },
+  }
+}
+```
+
+---
+
+## How resources work
+
+### Autocomplete flow
+
+1. User types `@query`
+2. OpenCode calls `search(query, limit)` on all providers in parallel
+3. Results are scored by relevance and merged
+4. Displayed in autocomplete with provider prefixes
+
+### Read flow
+
+1. User selects a resource (e.g., `opencode://session/ses_123`)
+2. Prompt is submitted with a `FileAttachmentPart` containing the URI
+3. OpenCode calls `read(uri)` on the appropriate provider
+4. Content is injected as synthetic text (like calling the Read tool)
+5. LLM receives the content as context
+
+### URI routing
+
+Resources are routed to providers based on URI scheme:
+
+- `file://path` → FileResourceProvider
+- `agent://explore` → AgentResourceProvider
+- `opencode://session/123` → Your custom provider
+- `docs://react/hooks` → Your custom provider
+
+Multiple providers can handle the same scheme - all results are merged.
+
+---
+
+## Best practices
+
+### Performance
+
+- Keep `search()` fast - it has a 2-second timeout
+- Cache results when possible
+- Return early if query doesn't match your resources
+
+### Display names
+
+- Use clear, descriptive names
+- Add subtitles for context (timestamps, file sizes, etc.)
+- Choose prefixes that are visually distinct
+
+### Error handling
+
+- Throw descriptive errors from `read()` if resource not found
+- Handle network failures gracefully
+- Validate URIs before processing
+
+### URI design
+
+- Use hierarchical URIs: `scheme://category/id`
+- Include version if needed: `docs://react@18/useEffect`
+- Keep URIs stable - they may be saved in prompts
+
+---
+
+## API reference
+
+### Resource
+
+```ts
+interface Resource {
+  uri: string
+  name: string
+  description?: string
+  mimeType?: string
+  metadata?: {
+    subtitle?: string
+    [key: string]: any
+  }
+}
+```
+
+### ResourceContent
+
+```ts
+interface ResourceContent {
+  uri: string
+  mimeType: string
+  text?: string
+  blob?: string
+}
+```
+
+### ResourceProvider
+
+```ts
+interface ResourceProvider {
+  name: string
+  schemes: string[]
+  search(query: string, limit: number): Promise<Resource[]>
+  read(uri: string): Promise<ResourceContent>
+  subscribe?(uri: string, callback: (uri: string) => void): Promise<void>
+}
+```
+
+---
+
+## Related
+
+- [Plugins](/docs/plugins) - Learn about the plugin system
+- [Custom Tools](/docs/custom-tools) - Add custom tools to OpenCode
+- [MCP Servers](/docs/mcp-servers) - Integrate MCP servers

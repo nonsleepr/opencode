@@ -11,7 +11,6 @@ import { useCommandDialog } from "@tui/component/dialog-command"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
-import { useFrecency } from "./frecency"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -56,9 +55,7 @@ export type AutocompleteOption = {
   aliases?: string[]
   disabled?: boolean
   description?: string
-  isDirectory?: boolean
   onSelect?: () => void
-  path?: string
 }
 
 export function Autocomplete(props: {
@@ -78,7 +75,6 @@ export function Autocomplete(props: {
   const command = useCommandDialog()
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
-  const frecency = useFrecency()
 
   const [store, setStore] = createStore({
     index: 0,
@@ -171,10 +167,6 @@ export function Autocomplete(props: {
       draft.parts.push(part)
       props.setExtmark(partIndex, extmarkId)
     })
-
-    if (part.type === "file" && part.source && part.source.type === "file") {
-      frecency.updateFrecency(part.source.path)
-    }
   }
 
   const [files] = createResource(
@@ -184,32 +176,24 @@ export function Autocomplete(props: {
 
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
 
-      // Get files from SDK
-      const result = await sdk.client.find.files({
+      // Get resources from SDK (files, sessions, agents, etc.)
+      const result = await sdk.client.find.resources({
         query: baseQuery,
       })
 
       const options: AutocompleteOption[] = []
 
-      // Add file options
+      // Add resource options
       if (!result.error && result.data) {
-        const sortedFiles = result.data.sort((a, b) => {
-          const aScore = frecency.getFrecency(a)
-          const bScore = frecency.getFrecency(b)
-          if (aScore !== bScore) return bScore - aScore
-          const aDepth = a.split("/").length
-          const bDepth = b.split("/").length
-          if (aDepth !== bDepth) return aDepth - bDepth
-          return a.localeCompare(b)
-        })
-
         const width = props.anchor().width - 4
-        options.push(
-          ...sortedFiles.map((item): AutocompleteOption => {
+        for (const item of result.data) {
+          // Handle both legacy string format and new resource object format
+          if (typeof item === "string") {
+            // Legacy file path string
             let url = `file://${process.cwd()}/${item}`
-            let filename = item
-            if (lineRange && !item.endsWith("/")) {
-              filename = `${item}#${lineRange.startLine}${lineRange.endLine ? `-${lineRange.endLine}` : ""}`
+            let filename: string = item
+            if (lineRange && !filename.endsWith("/")) {
+              filename = `${filename}#${lineRange.startLine}${lineRange.endLine ? `-${lineRange.endLine}` : ""}`
               const urlObj = new URL(url)
               urlObj.searchParams.set("start", String(lineRange.startLine))
               if (lineRange.endLine !== undefined) {
@@ -218,11 +202,8 @@ export function Autocomplete(props: {
               url = urlObj.toString()
             }
 
-            const isDir = item.endsWith("/")
-            return {
+            options.push({
               display: Locale.truncateMiddle(filename, width),
-              isDirectory: isDir,
-              path: item,
               onSelect: () => {
                 insertPart(filename, {
                   type: "file",
@@ -240,9 +221,83 @@ export function Autocomplete(props: {
                   },
                 })
               },
-            }
-          }),
-        )
+            })
+          } else {
+            // New resource object format
+            const resource = item as any
+            const resourceName = resource.name
+            const resourceUri = resource.uri
+
+            // Get prefix: metadata.prefix > "[metadata.clientName]" > ""
+            const prefix =
+              resource.metadata?.prefix || (resource.metadata?.clientName ? `[${resource.metadata.clientName}]` : "")
+
+            // Get display value based on config (default to "name")
+            const displayMode = sync.data.config.resource_display_mode ?? "name"
+            const displayValue = displayMode === "uri" ? resourceUri : resourceName
+
+            // Build full display string: prefix + space + displayValue (if prefix exists)
+            const display = Locale.truncateMiddle(prefix ? `${prefix} ${displayValue}` : displayValue, width)
+
+            // Determine resource type
+            const isAgent = resource.uri?.startsWith("agent://")
+            const isMCP = resource.metadata?.clientName !== undefined
+
+            options.push({
+              display,
+              description: resource.description,
+              onSelect: () => {
+                if (isAgent) {
+                  // Agent resource
+                  insertPart(resourceName, {
+                    type: "agent",
+                    name: resourceName,
+                    source: {
+                      start: 0,
+                      end: 0,
+                      value: "",
+                    },
+                  })
+                } else if (isMCP) {
+                  // MCP resource with metadata for fast routing
+                  insertPart(resourceName, {
+                    type: "file",
+                    mime: resource.mimeType || "text/plain",
+                    filename: resourceName,
+                    url: resource.uri,
+                    source: {
+                      type: "resource",
+                      text: {
+                        start: 0,
+                        end: 0,
+                        value: "",
+                      },
+                      clientName: resource.metadata.clientName,
+                      uri: resource.uri,
+                    },
+                  })
+                } else {
+                  // File or other resource
+                  insertPart(resourceName, {
+                    type: "file",
+                    mime: resource.mimeType || "text/plain",
+                    filename: resourceName,
+                    url: resource.uri,
+                    source: {
+                      type: "file",
+                      text: {
+                        start: 0,
+                        end: 0,
+                        value: "",
+                      },
+                      path: resource.uri,
+                    },
+                  })
+                }
+              },
+            })
+          }
+        }
       }
 
       return options
@@ -251,62 +306,6 @@ export function Autocomplete(props: {
       initialValue: [],
     },
   )
-
-  const mcpResources = createMemo(() => {
-    if (!store.visible || store.visible === "/") return []
-
-    const options: AutocompleteOption[] = []
-    const width = props.anchor().width - 4
-
-    for (const res of Object.values(sync.data.mcp_resource)) {
-      options.push({
-        display: Locale.truncateMiddle(`${res.name} (${res.uri})`, width),
-        description: res.description,
-        onSelect: () => {
-          insertPart(res.name, {
-            type: "file",
-            mime: res.mimeType ?? "text/plain",
-            filename: res.name,
-            url: res.uri,
-            source: {
-              type: "resource",
-              text: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-              clientName: res.client,
-              uri: res.uri,
-            },
-          })
-        },
-      })
-    }
-
-    return options
-  })
-
-  const agents = createMemo(() => {
-    const agents = sync.data.agent
-    return agents
-      .filter((agent) => !agent.hidden && agent.mode !== "primary")
-      .map(
-        (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
-          onSelect: () => {
-            insertPart(agent.name, {
-              type: "agent",
-              name: agent.name,
-              source: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-            })
-          },
-        }),
-      )
-  })
 
   const session = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID) : undefined))
   const commands = createMemo((): AutocompleteOption[] => {
@@ -467,12 +466,13 @@ export function Autocomplete(props: {
 
   const options = createMemo((prev: AutocompleteOption[] | undefined) => {
     const filesValue = files()
-    const agentsValue = agents()
     const commandsValue = commands()
 
-    const mixed: AutocompleteOption[] = (
-      store.visible === "@" ? [...agentsValue, ...(filesValue || []), ...mcpResources()] : [...commandsValue]
-    ).filter((x) => x.disabled !== true)
+    // For @ completion, only use files (which now includes all resources from ResourceRegistry)
+    // Agents are now included in the resource results, no need to add separately
+    const mixed: AutocompleteOption[] = (store.visible === "@" ? filesValue || [] : [...commandsValue]).filter(
+      (x) => x.disabled !== true,
+    )
 
     const currentFilter = filter()
 
@@ -489,12 +489,10 @@ export function Autocomplete(props: {
       limit: 10,
       scoreFn: (objResults) => {
         const displayResult = objResults[0]
-        let score = objResults.score
         if (displayResult && displayResult.target.startsWith(store.visible + currentFilter)) {
-          score *= 2
+          return objResults.score * 2
         }
-        const frecencyScore = objResults.obj.path ? frecency.getFrecency(objResults.obj.path) : 0
-        return score * (1 + frecencyScore)
+        return objResults.score
       },
     })
 
@@ -532,27 +530,6 @@ export function Autocomplete(props: {
     if (!selected) return
     hide()
     selected.onSelect?.()
-  }
-
-  function expandDirectory() {
-    const selected = options()[store.selected]
-    if (!selected) return
-
-    const input = props.input()
-    const currentCursorOffset = input.cursorOffset
-
-    const displayText = selected.display.trimEnd()
-    const path = displayText.startsWith("@") ? displayText.slice(1) : displayText
-
-    input.cursorOffset = store.index
-    const startCursor = input.logicalCursor
-    input.cursorOffset = currentCursorOffset
-    const endCursor = input.logicalCursor
-
-    input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
-    input.insertText("@" + path)
-
-    setStore("selected", 0)
   }
 
   function show(mode: "@" | "/") {
@@ -619,18 +596,8 @@ export function Autocomplete(props: {
             e.preventDefault()
             return
           }
-          if (name === "return") {
+          if (name === "return" || name === "tab") {
             select()
-            e.preventDefault()
-            return
-          }
-          if (name === "tab") {
-            const selected = options()[store.selected]
-            if (selected?.isDirectory) {
-              expandDirectory()
-            } else {
-              select()
-            }
             e.preventDefault()
             return
           }
@@ -696,6 +663,7 @@ export function Autocomplete(props: {
               </text>
               <Show when={option.description}>
                 <text fg={index() === store.selected ? selectedForeground(theme) : theme.textMuted} wrapMode="none">
+                  {" "}
                   {option.description}
                 </text>
               </Show>

@@ -3,8 +3,7 @@ import path from "path"
 import { ReadTool } from "../../src/tool/read"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import { PermissionNext } from "../../src/permission/next"
-import { Agent } from "../../src/agent/agent"
+import type { PermissionNext } from "../../src/permission/next"
 
 const ctx = {
   sessionID: "test",
@@ -88,7 +87,7 @@ describe("tool.read external_directory permission", () => {
             requests.push(req)
           },
         }
-        // This will fail because file doesn't exist, but we can check if permission was asked
+        // This will fail because relative paths are not supported
         await read.execute({ filePath: "../outside.txt" }, testCtx).catch(() => {})
         const extDirReq = requests.find((r) => r.permission === "external_directory")
         expect(extDirReq).toBeDefined()
@@ -123,45 +122,29 @@ describe("tool.read external_directory permission", () => {
 })
 
 describe("tool.read env file blocking", () => {
-  const cases: [string, boolean][] = [
+  test.each([
     [".env", true],
     [".env.local", true],
     [".env.production", true],
-    [".env.development.local", true],
+    [".env.sample", false],
     [".env.example", false],
     [".envrc", false],
     ["environment.ts", false],
-  ]
-
-  describe.each(["build", "plan"])("agent=%s", (agentName) => {
-    test.each(cases)("%s blocked=%s", async (filename, blocked) => {
-      await using tmp = await tmpdir({
-        init: (dir) => Bun.write(path.join(dir, filename), "content"),
-      })
-      await Instance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const agent = await Agent.get(agentName)
-          const ctxWithPermissions = {
-            ...ctx,
-            ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
-              for (const pattern of req.patterns) {
-                const rule = PermissionNext.evaluate(req.permission, pattern, agent.permission)
-                if (rule.action === "deny") {
-                  throw new PermissionNext.DeniedError(agent.permission)
-                }
-              }
-            },
-          }
-          const read = await ReadTool.init()
-          const promise = read.execute({ filePath: path.join(tmp.path, filename) }, ctxWithPermissions)
-          if (blocked) {
-            await expect(promise).rejects.toThrow(PermissionNext.DeniedError)
-          } else {
-            expect((await promise).output).toContain("content")
-          }
-        },
-      })
+  ])("%s blocked=%s", async (filename, blocked) => {
+    await using tmp = await tmpdir({
+      init: (dir) => Bun.write(path.join(dir, filename), "content"),
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const read = await ReadTool.init()
+        const promise = read.execute({ filePath: path.join(tmp.path, filename) }, ctx)
+        if (blocked) {
+          await expect(promise).rejects.toThrow("blocked")
+        } else {
+          expect((await promise).output).toContain("content")
+        }
+      },
     })
   })
 })

@@ -213,4 +213,49 @@ export interface Hooks {
     input: { sessionID: string; messageID: string; partID: string },
     output: { text: string },
   ) => Promise<void>
+  /**
+   * Register a custom resource provider
+   * Allows plugins to provide custom @ completion resources (sessions, docs, etc.)
+   */
+  "resource.provider"?: ResourceProvider
+}
+
+export interface ResourceProvider {
+  /** Unique name for this provider (e.g., "session", "github") */
+  name: string
+  /** URI schemes this provider handles (e.g., ["opencode"], ["git"]) */
+  schemes: string[]
+  /** Search for resources matching the query */
+  search(query: string, limit: number): Promise<ResourceResource[]>
+  /** Read the content of a resource */
+  read(uri: string): Promise<ResourceContent>
+  /** Optional: Subscribe to resource changes (for MCP compatibility) */
+  subscribe?(uri: string, callback: (uri: string) => void): Promise<void>
+}
+
+export interface ResourceResource {
+  /** Unique URI identifier */
+  uri: string
+  /** Display name for UI */
+  name: string
+  /** Optional description */
+  description?: string
+  /** MIME type */
+  mimeType?: string
+  /** Provider-specific metadata */
+  metadata?: {
+    subtitle?: string
+    [key: string]: any
+  }
+}
+
+export interface ResourceContent {
+  /** URI of the resource */
+  uri: string
+  /** MIME type */
+  mimeType: string
+  /** Text content (for text resources) */
+  text?: string
+  /** Binary content as base64 (for binary resources) */
+  blob?: string
 }

@@ -1917,6 +1917,48 @@ export namespace Server {
         },
       )
       .get(
+        "/find/resource",
+        describeRoute({
+          summary: "Find resources",
+          description: "Search for resources (files, agents, sessions, MCP resources, etc.) in the project",
+          operationId: "find.resources",
+          responses: {
+            200: {
+              description: "Resource objects",
+              content: {
+                "application/json": {
+                  schema: resolver(
+                    z
+                      .object({
+                        uri: z.string(),
+                        name: z.string(),
+                        description: z.string().optional(),
+                        mimeType: z.string().optional(),
+                        providerName: z.string(),
+                      })
+                      .array(),
+                  ),
+                },
+              },
+            },
+          },
+        }),
+        validator(
+          "query",
+          z.object({
+            query: z.string(),
+            limit: z.coerce.number().int().min(1).max(200).optional(),
+          }),
+        ),
+        async (c) => {
+          const query = c.req.valid("query").query
+          const limit = c.req.valid("query").limit
+          const { ResourceRegistry } = await import("../resource/registry")
+          const results = await ResourceRegistry.search(query, limit ?? 10)
+          return c.json(results)
+        },
+      )
+      .get(
         "/find/file",
         describeRoute({
           summary: "Find files",
@@ -1943,17 +1985,16 @@ export namespace Server {
           }),
         ),
         async (c) => {
+          // Alias to /find/resource but return only file:// URIs as strings for backward compat
           const query = c.req.valid("query").query
-          const dirs = c.req.valid("query").dirs
-          const type = c.req.valid("query").type
           const limit = c.req.valid("query").limit
-          const results = await File.search({
-            query,
-            limit: limit ?? 10,
-            dirs: dirs !== "false",
-            type,
-          })
-          return c.json(results)
+          const { ResourceRegistry } = await import("../resource/registry")
+          const results = await ResourceRegistry.search(query, limit ?? 10)
+
+          // Filter to file:// only and return as string array
+          const filePaths = results.filter((r) => r.uri.startsWith("file://")).map((r) => r.name)
+
+          return c.json(filePaths)
         },
       )
       .get(
@@ -2367,7 +2408,18 @@ export namespace Server {
               description: "MCP resources",
               content: {
                 "application/json": {
-                  schema: resolver(z.record(z.string(), MCP.Resource)),
+                  schema: resolver(
+                    z.record(
+                      z.string(),
+                      z.object({
+                        name: z.string(),
+                        uri: z.string(),
+                        description: z.string().optional(),
+                        mimeType: z.string().optional(),
+                        client: z.string(),
+                      }),
+                    ),
+                  ),
                 },
               },
             },
@@ -2816,7 +2868,7 @@ export namespace Server {
   )
 
   export async function openapi() {
-    const result = await generateSpecs(App(), {
+    const result = await generateSpecs(App() as any, {
       documentation: {
         info: {
           title: "opencode",

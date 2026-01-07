@@ -382,7 +382,6 @@ export namespace SessionPrompt {
           messageID: assistantMessage.id,
           sessionID: sessionID,
           abort,
-          extra: { bypassAgentCheck: true },
           async metadata(input) {
             await Session.updatePart({
               ...part,
@@ -884,36 +883,13 @@ export namespace SessionPrompt {
             return pieces
           }
           const url = new URL(part.url)
-          switch (url.protocol) {
-            case "data:":
-              if (part.mime === "text/plain") {
-                return [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the Read tool with the following input: ${JSON.stringify({ filePath: part.filename })}`,
-                  },
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: Buffer.from(part.url, "base64url").toString(),
-                  },
-                  {
-                    ...part,
-                    id: part.id ?? Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                  },
-                ]
-              }
-              break
-            case "file:":
+
+          // Use ResourceRegistry for all URIs
+          const { ResourceRegistry } = await import("../resource/registry")
+
+          try {
+            // Check if it's a file:// with special handling for text/plain or directories
+            if (url.protocol === "file:") {
               log.info("file", { mime: part.mime })
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
@@ -1094,6 +1070,72 @@ export namespace SessionPrompt {
                   source: part.source,
                 },
               ]
+            }
+
+            // For non-file:// URIs, use ResourceRegistry
+            const content = await ResourceRegistry.read(part.url)
+
+            const pieces: MessageV2.Part[] = [
+              {
+                id: Identifier.ascending("part"),
+                messageID: info.id,
+                sessionID: input.sessionID,
+                type: "text",
+                synthetic: true,
+                text: `Called the Read tool with the following input: ${JSON.stringify({ uri: part.url })}`,
+              },
+            ]
+
+            if (content.text) {
+              pieces.push({
+                id: Identifier.ascending("part"),
+                messageID: info.id,
+                sessionID: input.sessionID,
+                type: "text",
+                synthetic: true,
+                text: content.text,
+              })
+            } else if (content.blob) {
+              // Binary content
+              pieces.push({
+                id: part.id ?? Identifier.ascending("part"),
+                messageID: info.id,
+                sessionID: input.sessionID,
+                type: "file",
+                url: `data:${content.mimeType};base64,${content.blob}`,
+                mime: content.mimeType,
+                filename: part.filename ?? "resource",
+                source: part.source,
+              })
+            }
+
+            pieces.push({
+              ...part,
+              id: part.id ?? Identifier.ascending("part"),
+              messageID: info.id,
+              sessionID: input.sessionID,
+            })
+
+            return pieces
+          } catch (error: unknown) {
+            log.error("failed to read resource", { error: String(error), url: part.url })
+            const message = error instanceof Error ? error.message : String(error)
+            Bus.publish(Session.Event.Error, {
+              sessionID: input.sessionID,
+              error: new NamedError.Unknown({
+                message,
+              }).toObject(),
+            })
+            return [
+              {
+                id: Identifier.ascending("part"),
+                messageID: info.id,
+                sessionID: input.sessionID,
+                type: "text",
+                synthetic: true,
+                text: `Failed to read resource ${part.url} with error: ${message}`,
+              },
+            ]
           }
         }
 

@@ -15,7 +15,7 @@ export function DialogTag(props: { onSelect?: (value: string) => void }) {
   const [files] = createResource(
     () => [store.filter],
     async () => {
-      const result = await sdk.client.find.files({
+      const result = await sdk.client.find.resources({
         query: store.filter,
       })
       if (result.error) return []
@@ -25,10 +25,16 @@ export function DialogTag(props: { onSelect?: (value: string) => void }) {
   )
 
   const options = createMemo(() =>
-    (files() ?? []).map((file) => ({
-      value: file,
-      title: file,
-    })),
+    (files() ?? []).map((resource) => {
+      // Handle both string (legacy) and resource object format
+      if (typeof resource === "string") {
+        return { value: resource, title: resource }
+      }
+      return {
+        value: resource.name,
+        title: resource.name,
+      }
+    }),
   )
 
   return (

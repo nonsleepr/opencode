@@ -15,6 +15,10 @@
       "type": "remote",
       "url": "https://mcp.context7.com/mcp",
     },
+    "svelte": {
+      "type": "remote",
+      "url": "https://mcp.svelte.dev/mcp",
+    },
   },
   "tools": {
     "github-triage": false,
