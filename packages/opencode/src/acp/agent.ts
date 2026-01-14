@@ -7,11 +7,14 @@ import {
   type CancelNotification,
   type InitializeRequest,
   type InitializeResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
   type LoadSessionRequest,
   type NewSessionRequest,
   type PermissionOption,
   type PlanEntry,
   type PromptRequest,
+  type SessionInfo,
   type SetSessionModelRequest,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
@@ -371,6 +374,9 @@ export namespace ACP {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
+          sessionCapabilities: {
+            list: {}, // Enable session listing (unstable feature as of v0.13.0)
+          },
           mcpCapabilities: {
             http: true,
             sse: true,
@@ -477,6 +483,99 @@ export namespace ACP {
           throw RequestError.authRequired()
         }
         throw e
+      }
+    }
+
+    /**
+     * Lists existing sessions from the backend
+     * Implements the unstable_listSessions RFD feature (as of @agentclientprotocol/sdk v0.13.0)
+     *
+     * @see https://agentclientprotocol.com/rfds/session-list
+     */
+    async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+      const { cwd, cursor } = params
+
+      // Parse cursor for pagination (if provided)
+      let start: number | undefined
+      let limit: number | undefined
+
+      if (cursor) {
+        try {
+          const decoded = Buffer.from(cursor, "base64").toString("utf-8")
+          const parsed = JSON.parse(decoded)
+          start = parsed.start
+          limit = parsed.limit
+        } catch (err) {
+          log.error("invalid cursor in listSessions", { error: err, cursor })
+          throw RequestError.invalidParams({ cursor }, "Invalid cursor format")
+        }
+      }
+
+      // Set default page size if not in cursor
+      const pageSize = limit ?? 50
+
+      // Call backend SDK
+      const response = await this.sdk.session
+        .list(
+          {
+            directory: cwd ?? undefined,
+            start: start ?? undefined,
+            limit: pageSize,
+          },
+          { throwOnError: true },
+        )
+        .catch((err) => {
+          log.error("failed to list sessions", { error: err, cwd })
+          throw RequestError.internalError({ originalError: err.message }, "Failed to retrieve session list")
+        })
+
+      const sessions = response.data ?? []
+
+      // Map backend Session type to ACP SessionInfo
+      const sessionInfos: SessionInfo[] = sessions.map((session) => {
+        const info: SessionInfo = {
+          sessionId: session.id,
+          cwd: session.directory,
+          title: session.title || undefined, // Convert empty string to undefined
+          updatedAt: session.time.updated ? new Date(session.time.updated * 1000).toISOString() : undefined,
+          _meta: {
+            // Additional metadata for clients
+            createdAt: session.time.created ? new Date(session.time.created * 1000).toISOString() : undefined,
+            slug: session.slug,
+            version: session.version,
+            // Include summary if available
+            ...(session.summary && {
+              summary: {
+                additions: session.summary.additions,
+                deletions: session.summary.deletions,
+                files: session.summary.files,
+              },
+            }),
+          },
+        }
+        return info
+      })
+
+      // Generate next cursor if there are likely more results
+      let nextCursor: string | undefined
+      if (sessions.length === pageSize) {
+        // More results potentially available
+        const nextPage = {
+          start: (start ?? 0) + sessions.length,
+          limit: pageSize,
+        }
+        nextCursor = Buffer.from(JSON.stringify(nextPage)).toString("base64")
+      }
+
+      log.debug("listed sessions", {
+        count: sessionInfos.length,
+        hasMore: !!nextCursor,
+        cwd,
+      })
+
+      return {
+        sessions: sessionInfos,
+        nextCursor: nextCursor ?? undefined,
       }
     }
 

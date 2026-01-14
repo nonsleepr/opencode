@@ -10,7 +10,7 @@ The implementation follows a clean separation of concerns:
 
 - **`agent.ts`** - Implements the `Agent` interface from `@agentclientprotocol/sdk`
   - Handles initialization and capability negotiation
-  - Manages session lifecycle (`session/new`, `session/load`)
+  - Manages session lifecycle (`session/new`, `session/load`, `session/list`)
   - Processes prompts and returns responses
   - Properly implements ACP protocol v1
 
@@ -80,7 +80,9 @@ This implementation follows the ACP specification v1:
 ✅ **Session Management**
 
 - `session/new` - Create new conversation sessions
-- `session/load` - Resume existing sessions (basic support)
+- `session/load` - Resume existing sessions with history replay
+- `session/list` - List existing sessions with metadata (unstable, Draft RFD)
+- `session/setMode` - Switch between agent modes
 - Working directory context (`cwd`)
 - MCP server configuration support
 
@@ -90,41 +92,133 @@ This implementation follows the ACP specification v1:
 - Content block handling (text, resources)
 - Response with stop reasons
 
+✅ **Streaming**
+
+- Real-time `session/update` notifications
+- Progressive text streaming (`agent_message_chunk`)
+- Reasoning/thought streaming (`agent_thought_chunk`)
+- Tool execution progress (`tool_call`, `tool_call_update`)
+- Plan updates from TodoWrite tool
+
 ✅ **Client Capabilities**
 
 - File read/write operations
 - Permission requests
 - Terminal support (stub for future)
 
+## Session Management Features
+
+### Listing Sessions (Unstable)
+
+The `session/list` method allows clients to enumerate existing sessions with metadata. This feature is marked as **unstable** because it's currently in **Draft** status in the ACP RFD (Request for Dialog) process and has not yet been finalized. The API may change based on community feedback and real-world usage before reaching stable status.
+
+**Request Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "session/list",
+  "params": {
+    "cwd": "/path/to/project"
+  }
+}
+```
+
+**Response Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "sessions": [
+      {
+        "sessionId": "sess_abc123",
+        "cwd": "/path/to/project",
+        "title": "Fix authentication bug",
+        "updatedAt": "2026-01-14T10:30:00Z",
+        "_meta": {
+          "createdAt": "2026-01-14T09:00:00Z",
+          "slug": "fix-auth",
+          "version": "1.0.0"
+        }
+      }
+    ],
+    "nextCursor": "eyJzdGFydCI6NTAsImxpbWl0Ijo1MH0="
+  }
+}
+```
+
+**Features:**
+
+- **Directory Filtering** - Filter by working directory with `cwd` parameter
+- **Cursor-based Pagination** - Navigate large result sets via `cursor` and `nextCursor`
+- **Default Page Size** - 50 sessions per page
+- **Rich Metadata** - Includes session metadata in `_meta` field:
+  - `createdAt` - ISO 8601 timestamp of session creation
+  - `updatedAt` - ISO 8601 timestamp of last update
+  - `slug` - URL-friendly session identifier
+  - `version` - Session version string
+  - `summary` - File change statistics (additions, deletions, files affected)
+- **Error Handling** - Validates cursor format and returns proper JSON-RPC errors
+
+**See:** [Session List RFD](https://agentclientprotocol.com/rfds/session-list)
+
+**Implementation Details:**
+
+The `unstable_listSessions()` method in `agent.ts`:
+
+1. Parses and validates the cursor for pagination
+2. Calls the backend SDK's `session.list()` API
+3. Maps backend session data to ACP `SessionInfo` format
+4. Converts Unix timestamps to ISO 8601 strings
+5. Generates a new cursor if more results are available
+6. Returns proper JSON-RPC errors for invalid inputs
+
+Tests are available in `test/acp/session-list.test.ts` with full coverage.
+
 ## Current Limitations
 
 ### Not Yet Implemented
 
-1. **Streaming Responses** - Currently returns complete responses instead of streaming via `session/update` notifications
-2. **Tool Call Reporting** - Doesn't report tool execution progress
-3. **Session Modes** - No mode switching support yet
-4. **Authentication** - No actual auth implementation
-5. **Terminal Support** - Placeholder only
-6. **Session Persistence** - `session/load` doesn't restore actual conversation history
+1. **Authentication** - No actual auth implementation (stub only)
+2. **Terminal Support** - Placeholder only, no command execution
+
+### Experimental Features
+
+1. **Session Listing** - `unstable_listSessions` is currently a **Draft RFD** in the ACP specification and may change based on community feedback before reaching stable status. The API is subject to breaking changes until the RFD is completed and accepted. Requires `@agentclientprotocol/sdk` v0.13.0 or higher.
+   - **RFD Status**: Draft (not yet finalized)
+   - **Why unstable**: API may change based on real-world usage and feedback
+   - **When it will stabilize**: After the RFD process completes and community consensus is reached
 
 ### Future Enhancements
 
-- **Real-time Streaming**: Implement `session/update` notifications for progressive responses
-- **Tool Call Visibility**: Report tool executions as they happen
-- **Session Persistence**: Save and restore full conversation history
-- **Mode Support**: Implement different operational modes (ask, code, etc.)
-- **Enhanced Permissions**: More sophisticated permission handling
+- **Enhanced Authentication**: Implement actual authentication flow
 - **Terminal Integration**: Full terminal support via opencode's bash tool
+- **Enhanced Permissions**: More sophisticated permission handling with user prompts
 
 ## Testing
 
 ```bash
-# Run ACP tests
-bun test test/acp.test.ts
+# Run all ACP tests
+bun test test/acp/
+
+# Run session list tests specifically
+bun test test/acp/session-list.test.ts
 
 # Test manually with stdio
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' | opencode acp
 ```
+
+The test suite includes comprehensive coverage for:
+
+- Session listing with and without parameters
+- Pagination with cursor support
+- Directory filtering
+- Error handling for invalid cursors
+- Metadata validation
+- Edge cases (empty results, consistent ordering)
 
 ## Design Decisions
 
